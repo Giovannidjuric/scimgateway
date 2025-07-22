@@ -376,7 +376,8 @@ scimgateway.deleteUser = async (baseEntity, id, ctx) => {
     base = `<GUID=${guid}>`
   } else {
     // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-    base = await unhashId(baseEntity, id, ctx)
+    // Only search for users when in deleteUser function to prevent cross-entity access
+    base = await unhashUserIdOnly(baseEntity, id, ctx)
     // Decode URL encoding if present
     if (typeof base === 'string' && base.includes('%')) {
       base = decodeURIComponent(base)
@@ -429,7 +430,8 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
       base = `<GUID=${guid}>`
     } else {
       // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-      base = await unhashId(baseEntity, id, ctx)
+      // Only search for users when in modifyUser function to prevent cross-entity access
+      base = await unhashUserIdOnly(baseEntity, id, ctx)
     }
 
     try {
@@ -473,7 +475,8 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
       base = `<GUID=${guid}>`
     } else {
       // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-      base = await unhashId(baseEntity, id, ctx)
+      // Only search for users when in modifyUser function to prevent cross-entity access
+      base = await unhashUserIdOnly(baseEntity, id, ctx)
     }
     const ldapOptions: any = {
       attributes: activeAttr,
@@ -512,7 +515,8 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
     base = `<GUID=${guid}>`
   } else {
     // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-    base = await unhashId(baseEntity, id, ctx)
+    // Only search for users when in modifyUser function to prevent cross-entity access
+    base = await unhashUserIdOnly(baseEntity, id, ctx)
     // Decode URL encoding if present
     if (typeof base === 'string' && base.includes('%')) {
       base = decodeURIComponent(base)
@@ -704,6 +708,7 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
       // For OpenLDAP with DN-based IDs, unhash the member ID if it's a hashed value
       if (!config.useSID_id && !config.useGUID_id) {
         try {
+          // Groups can contain both users and other groups, so allow both entity types
           memberValue = await unhashId(baseEntity, getObj.value, ctx)
           // Decode URL encoding if present
           if (typeof memberValue === 'string' && memberValue.includes('%')) {
@@ -781,6 +786,7 @@ scimgateway.createGroup = async (baseEntity, groupObj, ctx) => {
   if (endpointObj.member && Array.isArray(endpointObj.member) && !config.useSID_id && !config.useGUID_id) {
     for (let i = 0; i < endpointObj.member.length; i++) {
       try {
+        // Groups can contain both users and other groups as members
         const originalDN = await unhashId(baseEntity, endpointObj.member[i], ctx)
         // Decode URL encoding if present
         if (typeof originalDN === 'string' && originalDN.includes('%')) {
@@ -841,7 +847,8 @@ scimgateway.deleteGroup = async (baseEntity, id, ctx) => {
     base = `<GUID=${guid}>`
   } else {
     // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-    base = await unhashId(baseEntity, id, ctx)
+    // Only search for groups when in deleteGroup function to prevent cross-entity access
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
     // Decode URL encoding if present
     if (typeof base === 'string' && base.includes('%')) {
       base = decodeURIComponent(base)
@@ -884,6 +891,7 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
       el.value = dn
     } else {
       // For OpenLDAP with DN-based IDs, unhash the member ID to get the original DN
+      // Groups can contain both users and other groups as members
       el.value = await unhashId(baseEntity, el.value, ctx)
       // Decode URL encoding if present
       if (typeof el.value === 'string' && el.value.includes('%')) {
@@ -903,7 +911,8 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
   else if (config.useGUID_id) base = `<GUID=${id}>`
   else {
     // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-    base = await unhashId(baseEntity, id, ctx)
+    // Only search for groups when in modifyGroup function to prevent cross-entity access
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
     // Decode URL encoding if present
     if (typeof base === 'string' && base.includes('%')) {
       base = decodeURIComponent(base)
