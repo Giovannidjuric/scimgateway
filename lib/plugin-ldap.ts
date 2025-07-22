@@ -88,6 +88,7 @@ import ldap from 'ldapjs'
 // @ts-expect-error missing type definitions
 import { BerReader } from '@ldapjs/asn1'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 
 // for supporting nodejs running scimgateway package directly, using dynamic import instead of: import { ScimGateway } from 'scimgateway'
 // scimgateway also inclues HelperRest: import { ScimGateway, HelperRest } from 'scimgateway'
@@ -158,7 +159,15 @@ scimgateway.getUsers = async (baseEntity, getObj, attributes, ctx) => {
         } else if (config.useGUID_id) {
           const guid = Buffer.from(getObj.value, 'base64').toString('hex')
           base = `<GUID=${guid}>` // '<GUID=b3975b675d3a21498b4e511e1a8ccb9e>'
-        } else base = getObj.value
+        } else {
+          // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+          // Only search for users when in getUsers function to prevent cross-entity access
+          base = await unhashUserIdOnly(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof base === 'string' && base.includes('%')) {
+            base = decodeURIComponent(base)
+          }
+        }
         ldapOptions = {
           attributes: attrs,
         }
@@ -257,6 +266,22 @@ scimgateway.getUsers = async (baseEntity, getObj, attributes, ctx) => {
       }
 
       const scimObj = scimgateway.endpointMapper('inbound', user, config.map.user)[0] // endpoint attribute naming => SCIM
+      
+      // Hash the DN-based ID for security
+      if (scimObj.id && typeof scimObj.id === 'string') {
+        scimObj.id = hashId(scimObj.id)
+      }
+      
+      // Hash group membership references (memberOf -> groups.value)
+      if (scimObj.groups && Array.isArray(scimObj.groups)) {
+        scimObj.groups = scimObj.groups.map((group: any) => {
+          if (group.value && typeof group.value === 'string') {
+            return { ...group, value: hashId(group.value) }
+          }
+          return group
+        })
+      }
+      
       // if (!scimObj.groups) scimObj.groups = []
       return scimObj
     }))
@@ -349,7 +374,14 @@ scimgateway.deleteUser = async (baseEntity, id, ctx) => {
   } else if (config.useGUID_id) {
     const guid = Buffer.from(id, 'base64').toString('hex')
     base = `<GUID=${guid}>`
-  } else base = id // dn
+  } else {
+    // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+    base = await unhashId(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
   const ldapOptions = {}
 
   try {
@@ -395,7 +427,10 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
     } else if (config.useGUID_id) {
       const guid = Buffer.from(id, 'base64').toString('hex')
       base = `<GUID=${guid}>`
-    } else base = id // dn
+    } else {
+      // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+      base = await unhashId(baseEntity, id, ctx)
+    }
 
     try {
       if (grp.add[groupsAttr].length > 0) {
@@ -436,7 +471,10 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
     } else if (config.useGUID_id) {
       const guid = Buffer.from(id, 'base64').toString('hex')
       base = `<GUID=${guid}>`
-    } else base = id // dn
+    } else {
+      // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+      base = await unhashId(baseEntity, id, ctx)
+    }
     const ldapOptions: any = {
       attributes: activeAttr,
     }
@@ -472,7 +510,14 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
   } else if (config.useGUID_id) {
     const guid = Buffer.from(id, 'base64').toString('hex')
     base = `<GUID=${guid}>`
-  } else base = id // dn
+  } else {
+    // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+    base = await unhashId(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
 
   if (Object.keys(endpointObj).length < 1) return null
   const ldapOptions = {
@@ -581,7 +626,15 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
         } else if (config.useGUID_id) {
           const guid = Buffer.from(getObj.value, 'base64').toString('hex')
           base = `<GUID=${guid}>`
-        } else base = getObj.value
+        } else {
+          // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+          // Only search for groups when in getGroups function to prevent cross-entity access
+          base = await unhashGroupIdOnly(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof base === 'string' && base.includes('%')) {
+            base = decodeURIComponent(base)
+          }
+        }
         ldapOptions = {
           attributes: attrs,
         }
@@ -646,7 +699,23 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
   if (!ldapOptions) throw new Error(`${action} error: mandatory if-else logic not fully implemented`)
 
   try {
-    if (ldapOptions === 'getMemberOfGroups') result.Resources = await getMemberOfGroups(baseEntity, getObj.value, ctx)
+    if (ldapOptions === 'getMemberOfGroups') {
+      let memberValue = getObj.value
+      // For OpenLDAP with DN-based IDs, unhash the member ID if it's a hashed value
+      if (!config.useSID_id && !config.useGUID_id) {
+        try {
+          memberValue = await unhashId(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof memberValue === 'string' && memberValue.includes('%')) {
+            memberValue = decodeURIComponent(memberValue)
+          }
+        } catch (err) {
+          // If unhashing fails, the value might already be a DN, use it directly
+          memberValue = getObj.value
+        }
+      }
+      result.Resources = await getMemberOfGroups(baseEntity, memberValue, ctx)
+    }
     else {
       const groups: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
       result.Resources = await Promise.all(groups.map(async (group: any) => { // Promise.all because of async map
@@ -667,7 +736,24 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
             }
           }
         }
-        return scimgateway.endpointMapper('inbound', group, config.map.group)[0] // endpoint attribute naming => SCIM
+        const scimGroup = scimgateway.endpointMapper('inbound', group, config.map.group)[0] // endpoint attribute naming => SCIM
+        
+        // Hash the DN-based group ID for security
+        if (scimGroup.id && typeof scimGroup.id === 'string') {
+          scimGroup.id = hashId(scimGroup.id)
+        }
+        
+        // Hash member DNs in group membership
+        if (scimGroup.members && Array.isArray(scimGroup.members)) {
+          scimGroup.members = scimGroup.members.map((member: any) => {
+            if (member.value && typeof member.value === 'string') {
+              return { ...member, value: hashId(member.value) }
+            }
+            return member
+          })
+        }
+        
+        return scimGroup
       }))
     }
 
@@ -690,6 +776,24 @@ scimgateway.createGroup = async (baseEntity, groupObj, ctx) => {
 
   // convert SCIM attributes to endpoint attributes according to config.map
   const [endpointObj] = scimgateway.endpointMapper('outbound', groupObj, config.map.group)
+
+  // For OpenLDAP, unhash member IDs to get original DNs
+  if (endpointObj.member && Array.isArray(endpointObj.member) && !config.useSID_id && !config.useGUID_id) {
+    for (let i = 0; i < endpointObj.member.length; i++) {
+      try {
+        const originalDN = await unhashId(baseEntity, endpointObj.member[i], ctx)
+        // Decode URL encoding if present
+        if (typeof originalDN === 'string' && originalDN.includes('%')) {
+          endpointObj.member[i] = decodeURIComponent(originalDN)
+        } else {
+          endpointObj.member[i] = originalDN
+        }
+      } catch (err: any) {
+        // If unhashing fails, assume the value is already a DN
+        scimgateway.logDebug(baseEntity, `${action}: Could not unhash member ID ${endpointObj.member[i]}, using as-is: ${err.message}`)
+      }
+    }
+  }
 
   // endpointObj.objectClass is mandatory and must must match your ldap schema
   endpointObj.objectClass = config.entity[baseEntity].ldap.groupObjectClasses // Active Directory: ["group"]
@@ -735,7 +839,14 @@ scimgateway.deleteGroup = async (baseEntity, id, ctx) => {
   } else if (config.useGUID_id) {
     const guid = Buffer.from(id, 'base64').toString('hex')
     base = `<GUID=${guid}>`
-  } else base = id // dn
+  } else {
+    // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+    base = await unhashId(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
   const ldapOptions = {}
 
   try {
@@ -771,6 +882,13 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
       const dn = await sidGuidToDn(baseEntity, el.value, ctx)
       if (!dn) throw new Error(`${action} error: sidGuidToDn() did not return any objectGUID value for dn=${el.value}`)
       el.value = dn
+    } else {
+      // For OpenLDAP with DN-based IDs, unhash the member ID to get the original DN
+      el.value = await unhashId(baseEntity, el.value, ctx)
+      // Decode URL encoding if present
+      if (typeof el.value === 'string' && el.value.includes('%')) {
+        el.value = decodeURIComponent(el.value)
+      }
     }
     if (el.operation && el.operation === 'delete') { // delete member from group
       grp.remove[memberAttr].push(el.value) // endpointMapper returns URI encoded id because some IdP's don't encode id used in GET url e.g. Symantec/Broadcom/CA
@@ -783,7 +901,14 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
   let base
   if (config.useSID_id) base = `<SID=${id}>`
   else if (config.useGUID_id) base = `<GUID=${id}>`
-  else base = id // dn
+  else {
+    // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+    base = await unhashId(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
 
   try {
     delete attrObj.members
@@ -825,6 +950,332 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
 // =================================================
 // helpers
 // =================================================
+
+//
+// hashId - creates a deterministic hash of DN for use as external ID
+// Uses SHA-256 and base64url encoding for URL-safe IDs
+//
+const hashId = (dn: string): string => {
+  if (!dn || typeof dn !== 'string') {
+    throw new Error('hashId() requires a valid DN string')
+  }
+  // Normalize DN to lowercase for consistent hashing
+  const normalizedDn = dn.toLowerCase().trim()
+  const hash = crypto.createHash('sha256')
+  hash.update(normalizedDn, 'utf8')
+  // Use base64url encoding (URL-safe, no padding)
+  return hash.digest('base64url')
+}
+
+//
+// unhashId - retrieves original DN from hashed ID using lookup table
+// For OpenLDAP, we need to search for the object and return its DN
+//
+const unhashId = async (baseEntity: string, hashedId: string, ctx: any): Promise<string> => {
+  const action = 'unhashId'
+  scimgateway.logDebug(baseEntity, `${action}: Looking for hashed ID: ${hashedId}`)
+  
+  // First try to find user with this hashed ID
+  try {
+    const userResult = await searchByHashedId(baseEntity, hashedId, 'user', ctx)
+    if (userResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found user DN: ${userResult}`)
+      return userResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching users: ${err.message}`)
+  }
+  
+  // Then try to find group with this hashed ID
+  try {
+    const groupResult = await searchByHashedId(baseEntity, hashedId, 'group', ctx)
+    if (groupResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found group DN: ${groupResult}`)
+      return groupResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching groups: ${err.message}`)
+  }
+  
+  // If direct search fails, try alternative approach with full object retrieval
+  // This handles cases where DN format might differ between searches
+  try {
+    scimgateway.logDebug(baseEntity, `${action}: Trying alternative search for ${hashedId}`)
+    const alternativeResult = await searchByHashedIdAlternative(baseEntity, hashedId, ctx)
+    if (alternativeResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found via alternative search: ${alternativeResult}`)
+      return alternativeResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in alternative search: ${err.message}`)
+  }
+  
+  throw new Error(`${action} error: no object found for hashed ID: ${hashedId}`)
+}
+
+//
+// searchByHashedIdAlternative - alternative search using full user/group attributes
+// This addresses cases where DN format differs between listing and search operations
+//
+const searchByHashedIdAlternative = async (baseEntity: string, hashedId: string, ctx: any): Promise<string | null> => {
+  const action = 'searchByHashedIdAlternative'
+  scimgateway.logDebug(baseEntity, `${action}: Starting alternative search for hash: ${hashedId}`)
+  
+  // Try users first
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.userBase
+    const objectClasses = config.entity[baseEntity].ldap.userObjectClasses
+    
+    const objFilters: ldap.EqualityFilter[] = []
+    for (const objClass of objectClasses) {
+      objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+    }
+    
+    const filter = new ldap.AndFilter({ filters: objFilters })
+    const ldapOptions = {
+      filter,
+      scope,
+      attributes: [], // Get all attributes like in normal getUsers operation
+    }
+    
+    const users: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    scimgateway.logDebug(baseEntity, `${action}: Found ${users.length} users to check`)
+    
+    for (const user of users) {
+      // Process the user object similar to how it's done in getUsers
+      const scimObj = scimgateway.endpointMapper('inbound', user, config.map.user)[0]
+      if (scimObj.id && typeof scimObj.id === 'string') {
+        const userIdHash = hashId(scimObj.id)
+        scimgateway.logDebug(baseEntity, `${action}: User ${scimObj.userName || 'unknown'}: ${scimObj.id} -> ${userIdHash}`)
+        if (userIdHash === hashedId) {
+          scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! User DN: ${scimObj.id}`)
+          return scimObj.id
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching users: ${err.message}`)
+  }
+  
+  // Try groups if user search fails
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.groupBase
+    const objectClasses = config.entity[baseEntity].ldap.groupObjectClasses
+    
+    const objFilters: ldap.EqualityFilter[] = []
+    for (const objClass of objectClasses) {
+      objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+    }
+    
+    const filter = new ldap.AndFilter({ filters: objFilters })
+    const ldapOptions = {
+      filter,
+      scope,
+      attributes: [], // Get all attributes
+    }
+    
+    const groups: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    scimgateway.logDebug(baseEntity, `${action}: Found ${groups.length} groups to check`)
+    
+    for (const group of groups) {
+      // Process the group object similar to how it's done in getGroups
+      const scimGroup = scimgateway.endpointMapper('inbound', group, config.map.group)[0]
+      if (scimGroup.id && typeof scimGroup.id === 'string') {
+        const groupIdHash = hashId(scimGroup.id)
+        scimgateway.logDebug(baseEntity, `${action}: Group ${scimGroup.displayName || 'unknown'}: ${scimGroup.id} -> ${groupIdHash}`)
+        if (groupIdHash === hashedId) {
+          scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! Group DN: ${scimGroup.id}`)
+          return scimGroup.id
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching groups: ${err.message}`)
+  }
+  
+  scimgateway.logDebug(baseEntity, `${action}: No match found for hash: ${hashedId}`)
+  return null
+}
+
+//
+// searchByHashedId - searches for objects and compares hashed DNs
+//
+const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'user' | 'group', ctx: any): Promise<string | null> => {
+  const action = 'searchByHashedId'
+  const method = 'search'
+  const scope = 'sub'
+  let base: string
+  let objectClasses: string[]
+  
+  if (type === 'user') {
+    base = config.entity[baseEntity].ldap.userBase
+    objectClasses = config.entity[baseEntity].ldap.userObjectClasses
+  } else {
+    base = config.entity[baseEntity].ldap.groupBase
+    objectClasses = config.entity[baseEntity].ldap.groupObjectClasses
+  }
+  
+  scimgateway.logDebug(baseEntity, `${action}: Searching ${type}s in base: ${base}`)
+  scimgateway.logDebug(baseEntity, `${action}: Object classes: ${JSON.stringify(objectClasses)}`)
+  
+  // Create filter for all objects of this type
+  const objFilters: ldap.EqualityFilter[] = []
+  for (const objClass of objectClasses) {
+    const f = new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass })
+    objFilters.push(f)
+  }
+  
+  const filter = new ldap.AndFilter({ filters: objFilters })
+  const ldapOptions = {
+    filter,
+    scope,
+    attributes: ['dn'], // We only need the DN
+  }
+  
+  scimgateway.logDebug(baseEntity, `${action}: LDAP filter: ${filter.toString()}`)
+  
+  try {
+    const objects: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    scimgateway.logDebug(baseEntity, `${action}: Found ${objects.length} ${type} objects`)
+    
+    // Check each object's DN hash
+    for (let i = 0; i < objects.length; i++) {
+      const obj = objects[i]
+      if (obj.dn) {
+        const calculatedHash = hashId(obj.dn)
+        scimgateway.logDebug(baseEntity, `${action}: DN: ${obj.dn} -> Hash: ${calculatedHash}`)
+        if (calculatedHash === hashedId) {
+          scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! DN: ${obj.dn}`)
+          return obj.dn
+        }
+      }
+    }
+    
+    scimgateway.logDebug(baseEntity, `${action}: No match found for hash: ${hashedId}`)
+    return null
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching ${type}s: ${err.message}`)
+    return null
+  }
+}
+
+// unhashUserIdOnly - searches for users only to prevent cross-entity access
+const unhashUserIdOnly = async (baseEntity: string, hashedId: string, ctx: any): Promise<string> => {
+  const action = 'unhashUserIdOnly'
+  scimgateway.logDebug(baseEntity, `${action}: Looking for user with hashed ID: ${hashedId}`)
+  
+  // First try the efficient DN-only search for users
+  try {
+    const userResult = await searchByHashedId(baseEntity, hashedId, 'user', ctx)
+    if (userResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found user DN: ${userResult}`)
+      return userResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in DN search: ${err.message}`)
+  }
+  
+  // If that fails, try the alternative search that processes through SCIM mapper (users only)
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.userBase
+    const objectClasses = config.entity[baseEntity].ldap.userObjectClasses
+    
+    const objFilters: ldap.EqualityFilter[] = []
+    for (const objClass of objectClasses) {
+      objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+    }
+    
+    const filter = new ldap.AndFilter({ filters: objFilters })
+    const ldapOptions = {
+      filter,
+      scope,
+      attributes: [], // Get all attributes like in normal getUsers operation
+    }
+    
+    const users: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    scimgateway.logDebug(baseEntity, `${action}: Found ${users.length} users to check`)
+    
+    for (const user of users) {
+      // Process the user object similar to how it's done in getUsers
+      const scimObj = scimgateway.endpointMapper('inbound', user, config.map.user)[0]
+      if (scimObj.id && typeof scimObj.id === 'string') {
+        const userIdHash = hashId(scimObj.id)
+        scimgateway.logDebug(baseEntity, `${action}: User ${scimObj.userName || 'unknown'}: ${scimObj.id} -> ${userIdHash}`)
+        if (userIdHash === hashedId) {
+          scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! User DN: ${scimObj.id}`)
+          return scimObj.id
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in alternative search: ${err.message}`)
+  }
+  
+  throw new Error(`${action} error: user not found for hashed ID: ${hashedId}`)
+}
+
+// unhashGroupIdOnly - searches for groups only to prevent cross-entity access
+const unhashGroupIdOnly = async (baseEntity: string, hashedId: string, ctx: any): Promise<string> => {
+  const action = 'unhashGroupIdOnly'
+  scimgateway.logDebug(baseEntity, `${action}: Looking for group with hashed ID: ${hashedId}`)
+  
+  // First try the efficient DN-only search for groups
+  try {
+    const groupResult = await searchByHashedId(baseEntity, hashedId, 'group', ctx)
+    if (groupResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found group DN: ${groupResult}`)
+      return groupResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in DN search: ${err.message}`)
+  }
+  
+  // If that fails, try the alternative search that processes through SCIM mapper (groups only)
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.groupBase
+    const objectClasses = config.entity[baseEntity].ldap.groupObjectClasses
+    
+    const objFilters: ldap.EqualityFilter[] = []
+    for (const objClass of objectClasses) {
+      objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+    }
+    
+    const filter = new ldap.AndFilter({ filters: objFilters })
+    const ldapOptions = {
+      filter,
+      scope,
+      attributes: [], // Get all attributes like in normal getGroups operation
+    }
+    
+    const groups: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    scimgateway.logDebug(baseEntity, `${action}: Found ${groups.length} groups to check`)
+    
+    for (const group of groups) {
+      // Process the group object similar to how it's done in getGroups
+      const scimObj = scimgateway.endpointMapper('inbound', group, config.map.group)[0]
+      if (scimObj.id && typeof scimObj.id === 'string') {
+        const groupIdHash = hashId(scimObj.id)
+        scimgateway.logDebug(baseEntity, `${action}: Group ${scimObj.displayName || 'unknown'}: ${scimObj.id} -> ${groupIdHash}`)
+        if (groupIdHash === hashedId) {
+          scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! Group DN: ${scimObj.id}`)
+          return scimObj.id
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in alternative search: ${err.message}`)
+  }
+  
+  throw new Error(`${action} error: group not found for hashed ID: ${hashedId}`)
+}
 
 const _serviceClient: Record<string, any> = {}
 
@@ -1082,9 +1533,9 @@ const getMemberOfGroups = async (baseEntity: string, id: string, ctx: any) => {
     const groups: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
     return groups.map((grp: any) => {
       return { // { id: <id-group>> , displayName: <displayName-group>, members [{value: <id-user>}] }
-        id: encodeURIComponent(grp[attrs[0]]), // not mandatory, but included anyhow
+        id: hashId(grp[attrs[0]]), // Hash the group DN
         displayName: grp[attrs[1]], // displayName is mandatory
-        members: [{ value: encodeURIComponent(id) }], // only includes current user
+        members: [{ value: hashId(id) }], // Hash the user DN, only includes current user
       }
     })
   } catch (err) {

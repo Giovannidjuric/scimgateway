@@ -15,7 +15,7 @@
 // plugin-saphana - bun install hdb
 //
 
-const plugins = ['loki']
+const plugins = ['ldap']
 
 for (const plugin of plugins) {
   try {
