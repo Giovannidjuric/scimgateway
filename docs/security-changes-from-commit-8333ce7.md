@@ -176,7 +176,7 @@ curl -X GET http://localhost:8883/users/0GOVozFLd3csNqPYItMwpCKE4ydJ7LySWG5wiPja
 curl -X PATCH http://localhost:8883/users/0GOVozFLd3csNqPYItMwpCKE4ydJ7LySWG5wiPjalMU \
   -u gwadmin:password \
   -H "Content-Type: application/json" \
-  -H 'If-Match: W/"pYvUMKrVIVenuGB1j1HOYF"' \
+  -H 'If-Match: W/"pYvUMKrVIVenuGB1j1HOYF"' \ 
   -d '{
     "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
     "Operations": [
@@ -192,10 +192,10 @@ curl -X PATCH http://localhost:8883/users/0GOVozFLd3csNqPYItMwpCKE4ydJ7LySWG5wiP
 curl -X GET http://localhost:8883/groups/eRnAO4IRsOgCuXJhkx9SOb5yRFdK1lduqqosZFO2VDk -u gwadmin:password
 
 # PATCH group with If-Match header (add member)
-curl -X PATCH http://localhost:8883/groups/eRnAO4IRsOgCuXJhkx9SOb5yRFdK1lduqqosZFO2VDk \
+curl -X PATCH http://localhost:8883/groups/LkWDZy3KsIVe8E2jHkZyYb-qre9_cV62sfTfZFDwWoE \
   -u gwadmin:password \
   -H "Content-Type: application/json" \
-  -H 'If-Match: W/"3IGu81VDPsSfVLXfZmpycV"' \
+  -H 'If-Match: W/"RBNvo1WzZ4oRRq0W9+hknp"' \
   -d '{
     "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
     "Operations": [
