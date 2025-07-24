@@ -1,0 +1,31 @@
+{
+  "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+  "userName": "tobiahs",
+  "name": {
+    "givenName": "tobi",
+    "familyName": "song"
+  },
+  "displayName": "tobi",
+  "emails": [
+    {
+    "type": "work",
+    "value": "tobiahst@domain.com"
+    },
+        {
+    "type": "home",
+    "value": "tobiahst@domain.com"
+    }
+  ],
+  "uidNumber": 65100,
+  "gidNumber": 65100,
+  "entitlements": [
+    {
+      "type": "homeDirectory",
+      "value": "/home/tobiahs"
+    },
+    {
+      "type": "secret",
+      "value": "{CRYPT}XT954OcTlPNeI"
+    }
+  ]
+}

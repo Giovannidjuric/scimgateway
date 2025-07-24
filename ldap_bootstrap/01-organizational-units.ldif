@@ -1,0 +1,8 @@
+# Create organizational units matching your plugin-ldap.json configuration
+dn: ou=users,dc=iam,dc=asml,dc=com
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=iam,dc=asml,dc=com
+objectClass: organizationalUnit
+ou: groups

@@ -10,6 +10,50 @@ import id from 'node-machine-id'
 import fs from 'node:fs'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
+import * as z from 'zod/v4'
+import { ZodError } from 'zod/v4'
+
+// Enhanced ETag Zod schemas for selective field hashing
+const UserSchema = z
+  .object({
+    userName: z.string(),
+    name: z
+      .object({
+        givenName: z.string().optional(),
+        familyName: z.string().optional(),
+        formatted: z.string().optional(),
+      })
+      .optional(),
+    emails: z.array(
+      z.object({
+        type: z.string(),
+        value: z.string(),
+      })
+    ),
+    entitlements: z
+      .array(
+        z.object({
+          type: z.string(),
+          value: z.string(),
+        })
+      )
+      .transform((arr) => arr.filter((e) => e.type === "secret")),
+  })
+  .partial();
+
+const PermissionSchema = z
+  .object({
+    displayName: z.string(),
+    members: z.array(
+      z.object({
+        value: z.string().optional(),
+      })
+    ),
+  })
+  .partial();
+
+type UserHashProps = z.infer<typeof UserSchema>;
+type PermissionHashProps = z.infer<typeof PermissionSchema>;
 
 /** Lock implements mutual exclusion
  *  reference: https://thecodebarbarian.com/mutual-exclusion-patterns-with-node-promises
@@ -691,27 +735,176 @@ export const getBase64CertificateThumbprint = function (pemCertContent: string, 
   return base64Url
 }
 
+// Enhanced ETag helper functions
+type ObjWithId = { id: string; plainId?: string } & Record<string, any>;
+
+const getOrganizationalUnit = (objectId: string) => {
+  console.log("getOrganizationalUnit input:", objectId);
+  const decodedId = decodeURIComponent(objectId);
+  console.log("decodedId:", decodedId);
+  const parts = decodedId.split(",");
+  console.log("DN parts:", parts);
+  const organizationalUnit = parts.find(
+    (part) => part.includes("ou=permissions") || part.includes("ou=users") || part.includes("ou=groups")
+  );
+  console.log("found organizationalUnit:", organizationalUnit);
+  if (!organizationalUnit) {
+    console.log("No organizational unit found, defaulting to ou=permissions");
+    return "ou=permissions";
+  }
+  return organizationalUnit;
+};
+
+const isUser = (ou: string) => {
+  if (ou === "ou=users") {
+    return true;
+  }
+  return false;
+};
+
+const isPermission = (ou: string) => {
+  // Everything that's NOT ou=users should use PermissionSchema
+  if (ou !== "ou=users") {
+    return true;
+  }
+  return false;
+};
+
+const prepareHashObject = (organizationalUnit: string, obj: ObjWithId) => {
+  console.log("prepareHashObject - organizationalUnit:", organizationalUnit);
+  console.log("prepareHashObject - input object:", JSON.stringify(obj, null, 2));
+  
+  let hashInput: UserHashProps | PermissionHashProps | undefined;
+  if (isUser(organizationalUnit)) {
+    console.log("Detected as USER - applying UserSchema");
+    try {
+      hashInput = UserSchema.parse(obj);
+      console.log("UserSchema parsing successful:", JSON.stringify(hashInput, null, 2));
+    } catch (error) {
+      console.log("UserSchema parsing failed:");
+      if (error instanceof ZodError) {
+        console.log("Zod validation errors:", error.errors);
+        console.log("Zod error message:", error.message);
+      }
+      throw error;
+    }
+  } else if (isPermission(organizationalUnit)) {
+    console.log("Detected as PERMISSION/GROUP - applying PermissionSchema");
+    try {
+      hashInput = PermissionSchema.parse(obj);
+      console.log("PermissionSchema parsing successful:", JSON.stringify(hashInput, null, 2));
+    } catch (error) {
+      console.log("PermissionSchema parsing failed:");
+      if (error instanceof ZodError) {
+        console.log("Zod validation errors:", error.errors);
+        console.log("Zod error message:", error.message);
+      }
+      throw error;
+    }
+  } else {
+    console.log("Unknown organizational unit, returning undefined");
+  }
+
+  console.log("prepareHashObject - final hashInput:", JSON.stringify(hashInput, null, 2));
+  return hashInput;
+};
+
 /**
  * getEtag returns an ETag for the given object and updates the object with the ETag in meta.version
   * @param obj full object to calculate ETag from
   * @returns ETag string as W/"<hash>"
  */
 export const getEtag = function (obj: Record<string, any>): string {
-  if (typeof obj !== 'object' || obj === null) return ''
-  const hash = crypto
-    .createHash('sha256')
-    .update(JSON.stringify(obj), 'utf8')
-    .digest('base64url')
-    .substring(0, 22)
-
-  let eTag = ''
-  if (obj?.meta?.version) eTag = obj.meta.version
-  else {
-    eTag = `W/"${hash}"`
-    if (!obj.meta) obj.meta = {}
-    obj.meta.version = eTag
+  console.log("=== getEtag ENTRY ===");
+  console.log("Input object keys:", Object.keys(obj));
+  console.log("obj.id:", obj.id);
+  console.log("obj.plainId:", obj.plainId);
+  
+  if (typeof obj !== "object" || obj === null) {
+    console.log("getEtag: Invalid object, returning empty string");
+    return "";
   }
-  return eTag
+  if (obj.id === undefined) {
+    console.log("getEtag: No ID found, throwing error");
+    throw new Error("Requested object has no Id");
+  }
+  
+  // Use plainId (original DN) if provided, otherwise fall back to id
+  // This allows the function to work with both hashed IDs and plain text DNs
+  const idToAnalyze = obj.plainId || obj.id;
+  console.log("idToAnalyze:", idToAnalyze);
+  
+  const organizationalUnit = getOrganizationalUnit(idToAnalyze);
+  console.log("organizationalUnit:", organizationalUnit);
+  
+  try {
+    const hashInput = prepareHashObject(organizationalUnit, obj as ObjWithId);
+    console.log("hashInput after schema parsing:", JSON.stringify(hashInput, null, 2));
+    
+    // If schema parsing failed, fall back to original behavior
+    if (!hashInput) {
+      console.log("Schema parsing failed, falling back to original ETag generation");
+      const hashInputString = JSON.stringify(obj);
+      const hash = crypto
+        .createHash("sha256")
+        .update(hashInputString, "utf8")
+        .digest("base64url")
+        .substring(0, 22);
+      
+      let eTag = "";
+      if (obj?.meta?.version) {
+        eTag = obj.meta.version;
+      } else {
+        eTag = `W/"${hash}"`;
+        if (!obj.meta) obj.meta = {};
+        obj.meta.version = eTag;
+      }
+      
+      // Remove plainId from object before returning
+      if (obj.plainId) {
+        delete obj.plainId;
+        console.log("Removed plainId from object for security");
+      }
+      
+      return eTag;
+    }
+    
+    const hashInputString = JSON.stringify(hashInput);
+    console.log("hashInputString (for hashing):", hashInputString);
+    
+    const hash = crypto
+      .createHash("sha256")
+      .update(hashInputString, "utf8")
+      .digest("base64url") // Changed to base64url for consistency
+      .substring(0, 22);
+    console.log("generated hash:", hash);
+
+    let eTag = "";
+    if (obj?.meta?.version) {
+      eTag = obj.meta.version;
+      console.log("Using existing ETag:", eTag);
+    } else {
+      eTag = `W/"${hash}"`;
+      if (!obj.meta) obj.meta = {};
+      obj.meta.version = eTag;
+      console.log("Generated new ETag:", eTag);
+    }
+    
+    console.log("=== getEtag EXIT ===");
+    console.log("Final ETag:", eTag);
+    console.log("Object meta after ETag:", obj.meta);
+    
+    // Remove plainId from object before returning - it should not be exposed to external clients
+    if (obj.plainId) {
+      delete obj.plainId;
+      console.log("Removed plainId from object for security");
+    }
+    
+    return eTag;
+  } catch (error) {
+    console.log("getEtag ERROR:", error);
+    throw error;
+  }
 }
 
 /**

@@ -21,7 +21,7 @@
       "basic": [
         {
           "username": "gwadmin",
-          "password": "ZGQxMmJhMjYzZDhjOWJiMzZlZTkyNDVhNTc0OTAwYWM6N2MwZDNhYmE1NzhmNDQwNmY2YjY3YTY2MWZkNGZiNjA=",
+          "password": "NWQwNTUwZWI2NGI2MTNjMWRhMDhiMDVhODMyMGY3NWU6YzYxZGE0YWQxZWFiZDIwOGUwN2Y5MDBhMmM3NWRiYTU=",
           "readOnly": false,
           "baseEntities": []
         }
@@ -141,11 +141,11 @@
           "ldap://localhost:1389"
         ],
         "username": "cn=admin,dc=iam,dc=asml,dc=com",
-        "password": "NDA1NDA0YzFiNzI4MWZiMDQ0NDJiMGNjZDcxODZlZTQ6Nzc2NDllM2I2ODY4OTBmMmUwOTNlZmI1NzcxMmQ0ODY=",
+        "password": "NTYwMDc0NTgxMTQzMTRlYTk0MjU4YzAyMjRhY2E0MDI6ZjdhOWEzOTEyZWMxOTU4ZGRhYmZhZWEwMzIwZmJlNWE=",
         "ldap": {
           "isOpenLdap": true,
           "userBase": "ou=users,dc=iam,dc=asml,dc=com",
-          "groupBase": "ou=groups,dc=iam,dc=asml,dc=com",
+          "groupBase": "dc=iam,dc=asml,dc=com",
           "userFilter": null,
           "groupFilter": null,
           "allowModifyDN": true,

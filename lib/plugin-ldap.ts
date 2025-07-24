@@ -267,9 +267,11 @@ scimgateway.getUsers = async (baseEntity, getObj, attributes, ctx) => {
 
       const scimObj = scimgateway.endpointMapper('inbound', user, config.map.user)[0] // endpoint attribute naming => SCIM
       
-      // Hash the DN-based ID for security
+      // Store the original DN for ETag calculation, then hash the ID for security
+      let originalDN: string | undefined
       if (scimObj.id && typeof scimObj.id === 'string') {
-        scimObj.id = hashId(scimObj.id)
+        originalDN = scimObj.id // Store the plain DN
+        scimObj.id = hashId(scimObj.id) // Hash it for external use
       }
       
       // Hash group membership references (memberOf -> groups.value)
@@ -280,6 +282,11 @@ scimgateway.getUsers = async (baseEntity, getObj, attributes, ctx) => {
           }
           return group
         })
+      }
+      
+      // Set plainId for enhanced ETag generation by scimgateway framework
+      if (originalDN) {
+        scimObj.plainId = originalDN
       }
       
       // if (!scimObj.groups) scimObj.groups = []
@@ -743,9 +750,11 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
         }
         const scimGroup = scimgateway.endpointMapper('inbound', group, config.map.group)[0] // endpoint attribute naming => SCIM
         
-        // Hash the DN-based group ID for security
+        // Store the original DN for ETag calculation, then hash the ID for security
+        let originalDN: string | undefined
         if (scimGroup.id && typeof scimGroup.id === 'string') {
-          scimGroup.id = hashId(scimGroup.id)
+          originalDN = scimGroup.id // Store the plain DN
+          scimGroup.id = hashId(scimGroup.id) // Hash it for external use
         }
         
         // Hash member DNs in group membership
@@ -756,6 +765,11 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
             }
             return member
           })
+        }
+        
+        // Set plainId for enhanced ETag generation by scimgateway framework
+        if (originalDN) {
+          scimGroup.plainId = originalDN
         }
         
         return scimGroup

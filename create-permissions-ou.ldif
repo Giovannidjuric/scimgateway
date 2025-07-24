@@ -1,0 +1,25 @@
+# Create permissions organizational unit
+dn: ou=permissions,dc=iam,dc=asml,dc=com
+objectClass: organizationalUnit
+ou: permissions
+
+# Add some test permission groups
+dn: cn=read-access,ou=permissions,dc=iam,dc=asml,dc=com
+objectClass: groupOfNames
+objectClass: top
+cn: read-access
+member: cn=johndoe,ou=users,dc=iam,dc=asml,dc=com
+member: cn=lebron,ou=users,dc=iam,dc=asml,dc=com
+
+dn: cn=write-access,ou=permissions,dc=iam,dc=asml,dc=com
+objectClass: groupOfNames
+objectClass: top
+cn: write-access
+member: cn=tobiahs,ou=users,dc=iam,dc=asml,dc=com
+
+dn: cn=admin-access,ou=permissions,dc=iam,dc=asml,dc=com
+objectClass: groupOfNames
+objectClass: top
+cn: admin-access
+member: cn=lebron,ou=users,dc=iam,dc=asml,dc=com
+member: cn=tobiahs,ou=users,dc=iam,dc=asml,dc=com

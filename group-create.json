@@ -1,0 +1,9 @@
+{
+  "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+  "displayName": "finance",
+  "members": [
+    {
+      "value": "cn=usertest,ou=users,dc=iam,dc=asml,dc=com"
+    }
+  ]
+}

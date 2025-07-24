@@ -55,7 +55,8 @@
     "nodemailer": "^7.0.3",
     "passport": "^0.7.0",
     "passport-azure-ad": "^4.3.5",
-    "saml": "^3.0.1"
+    "saml": "^3.0.1",
+    "zod": "^4.0.5"
   },
   "peerDependencies": {
     "typescript": "^5.6.3"
