@@ -757,8 +757,16 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
           scimGroup.id = hashId(scimGroup.id) // Hash it for external use
         }
         
-        // Hash member DNs in group membership
+        // Store original member DNs for ETag calculation before hashing
+        let originalMembers: any[] | undefined
         if (scimGroup.members && Array.isArray(scimGroup.members)) {
+          // Deep copy original members for ETag calculation
+          originalMembers = scimGroup.members.map((member: any) => ({
+            ...member,
+            value: member.value // Keep original DN
+          }))
+          
+          // Hash member DNs for external API response
           scimGroup.members = scimGroup.members.map((member: any) => {
             if (member.value && typeof member.value === 'string') {
               return { ...member, value: hashId(member.value) }
@@ -767,9 +775,12 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
           })
         }
         
-        // Set plainId for enhanced ETag generation by scimgateway framework
+        // Set plainId and originalMembers for enhanced ETag generation by scimgateway framework
         if (originalDN) {
           scimGroup.plainId = originalDN
+        }
+        if (originalMembers) {
+          scimGroup._originalMembers = originalMembers
         }
         
         return scimGroup

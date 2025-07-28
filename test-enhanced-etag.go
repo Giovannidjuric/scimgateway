@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -173,16 +174,32 @@ func prepareHashObjectForPermission(obj map[string]interface{}) (*PermissionSche
 		permissionSchema.DisplayName = displayName
 	}
 	
-	// Extract members array
-	if membersArray, ok := obj["members"].([]interface{}); ok {
-		for _, memberItem := range membersArray {
-			if memberObj, ok := memberItem.(map[string]interface{}); ok {
-				member := MemberSchema{}
-				if memberValue, ok := memberObj["value"].(string); ok {
-					member.Value = memberValue
+	// Use original members if available, otherwise fall back to regular members
+	var membersToUse []interface{}
+	if originalMembers, ok := obj["_originalMembers"].([]interface{}); ok {
+		fmt.Println("Using original (unhashed) members for ETag calculation")
+		membersToUse = originalMembers
+	} else if members, ok := obj["members"].([]interface{}); ok {
+		fmt.Println("Using regular members for ETag calculation")
+		membersToUse = members
+	}
+	
+	// Extract members array with URL decoding
+	for _, memberItem := range membersToUse {
+		if memberObj, ok := memberItem.(map[string]interface{}); ok {
+			member := MemberSchema{}
+			if memberValue, ok := memberObj["value"].(string); ok {
+				// Decode URL-encoded member DNs for semantic correctness
+				decodedValue, err := url.QueryUnescape(memberValue)
+				if err != nil {
+					fmt.Printf("Warning: Failed to decode member value %s: %v\n", memberValue, err)
+					decodedValue = memberValue // Use original if decoding fails
+				} else {
+					fmt.Printf("Decoding member: %s -> %s\n", memberValue, decodedValue)
 				}
-				permissionSchema.Members = append(permissionSchema.Members, member)
+				member.Value = decodedValue
 			}
+			permissionSchema.Members = append(permissionSchema.Members, member)
 		}
 	}
 	
@@ -318,7 +335,7 @@ func main() {
 		fmt.Printf("User ETag: %s\n", userETag)
 	}
 	
-	// Test Group Object
+	// Test Group Object with original members
 	fmt.Println("\n--- Test 2: Group Object ---")
 	groupObj := map[string]interface{}{
 		"id": "eRnAO4IRsOgCuXJhkx9SOb5yRFdK1lduqqosZFO2VDk",
@@ -326,13 +343,24 @@ func main() {
 		"displayName": "finance",
 		"members": []interface{}{
 			map[string]interface{}{
-				"value": "0GOVozFLd3csNqPYItMwpCKE4ydJ7LySWG5wiPjalMU",
+				"value": "0GOVozFLd3csNqPYItMwpCKE4ydJ7LySWG5wiPjalMU", // Hashed member IDs
 			},
 			map[string]interface{}{
 				"value": "dFtxqa-QoKZWS4YG9LrbDO6C--580kfDlYMce-35V3c",
 			},
 			map[string]interface{}{
 				"value": "B5t313m6v0E0BTxsykrngNZaUz6B4ttFX7_JHrT1fhQ",
+			},
+		},
+		"_originalMembers": []interface{}{
+			map[string]interface{}{
+				"value": "cn%3Djohndoe%2Cou%3Dusers%2Cdc%3Diam%2Cdc%3Dasml%2Cdc%3Dcom", // URL-encoded member DNs
+			},
+			map[string]interface{}{
+				"value": "cn%3Dlebron%2Cou%3Dusers%2Cdc%3Diam%2Cdc%3Dasml%2Cdc%3Dcom",
+			},
+			map[string]interface{}{
+				"value": "cn%3Dtobiahs%2Cou%3Dusers%2Cdc%3Diam%2Cdc%3Dasml%2Cdc%3Dcom",
 			},
 		},
 	}

@@ -790,13 +790,30 @@ const prepareHashObject = (organizationalUnit: string, obj: ObjWithId) => {
     }
   } else if (isPermission(organizationalUnit)) {
     console.log("Detected as PERMISSION/GROUP - applying PermissionSchema");
+    
+    // Create a copy of the object for parsing, using original members if available
+    const objForHashing = { ...obj };
+    if (obj._originalMembers && Array.isArray(obj._originalMembers)) {
+      console.log("Using original (unhashed) members for ETag calculation");
+      // Decode URL-encoded member DNs for semantic correctness
+      objForHashing.members = obj._originalMembers.map((member: any) => {
+        if (member.value && typeof member.value === 'string') {
+          const decodedValue = decodeURIComponent(member.value);
+          console.log(`Decoding member: ${member.value} -> ${decodedValue}`);
+          return { ...member, value: decodedValue };
+        }
+        return member;
+      });
+      console.log("Original members (decoded):", JSON.stringify(objForHashing.members, null, 2));
+    }
+    
     try {
-      hashInput = PermissionSchema.parse(obj);
+      hashInput = PermissionSchema.parse(objForHashing);
       console.log("PermissionSchema parsing successful:", JSON.stringify(hashInput, null, 2));
     } catch (error) {
-      console.log("PermissionSchema parsing failed:");
+      console.log("PermissionSchema parsing failed:", error);
       if (error instanceof ZodError) {
-        console.log("Zod validation errors:", error.errors);
+        console.log("Zod validation errors:", JSON.stringify(error.issues, null, 2));
         console.log("Zod error message:", error.message);
       }
       throw error;
@@ -860,10 +877,14 @@ export const getEtag = function (obj: Record<string, any>): string {
         obj.meta.version = eTag;
       }
       
-      // Remove plainId from object before returning
+      // Remove plainId and _originalMembers from object before returning
       if (obj.plainId) {
         delete obj.plainId;
         console.log("Removed plainId from object for security");
+      }
+      if (obj._originalMembers) {
+        delete obj._originalMembers;
+        console.log("Removed _originalMembers from object for security");
       }
       
       return eTag;
@@ -894,15 +915,28 @@ export const getEtag = function (obj: Record<string, any>): string {
     console.log("Final ETag:", eTag);
     console.log("Object meta after ETag:", obj.meta);
     
-    // Remove plainId from object before returning - it should not be exposed to external clients
+    // Remove plainId and _originalMembers from object before returning - they should not be exposed to external clients
     if (obj.plainId) {
       delete obj.plainId;
       console.log("Removed plainId from object for security");
+    }
+    if (obj._originalMembers) {
+      delete obj._originalMembers;
+      console.log("Removed _originalMembers from object for security");
     }
     
     return eTag;
   } catch (error) {
     console.log("getEtag ERROR:", error);
+    
+    // Clean up sensitive properties even in error case
+    if (obj.plainId) {
+      delete obj.plainId;
+    }
+    if (obj._originalMembers) {
+      delete obj._originalMembers;
+    }
+    
     throw error;
   }
 }
