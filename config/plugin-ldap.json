@@ -152,8 +152,8 @@
           "namingAttribute": {
             "user": [
               {
-                "attribute": "cn",
-                "mapTo": "userName"
+                "attribute": "uid",
+                "mapTo": "name.givenName"
               }
             ],
             "group": [
@@ -213,7 +213,7 @@
           "mapTo": "gidNumber",
           "type": "integer"
         },
-        "uid": {
+        "cn": {
           "mapTo": "userName",
           "type": "string"
         },

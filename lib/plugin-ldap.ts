@@ -343,6 +343,11 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
   // endpointObj.objectClass is mandatory and must must match your ldap schema
   endpointObj.objectClass = config.entity[baseEntity].ldap.userObjectClasses // Active Directory: ["user", "person", "organizationalPerson", "top"]
 
+  // Ensure cn attribute is set for posixAccount compatibility
+  if (!endpointObj.cn && endpointObj.uid) {
+    endpointObj.cn = endpointObj.uid
+  }
+
   let base = ''
   const [userNamingAttr, scimAttr] = getNamingAttribute(baseEntity, 'user') // ['CN', 'userName']
   const arr = scimAttr.split('.')
