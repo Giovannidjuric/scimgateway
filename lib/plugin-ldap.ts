@@ -85,6 +85,7 @@
 // =================================================================================
 
 import ldap from 'ldapjs'
+import { LdapCounterClient } from './ldap-counter-client'
 // @ts-expect-error missing type definitions
 import { BerReader } from '@ldapjs/asn1'
 import fs from 'node:fs'
@@ -317,6 +318,14 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
   // convert SCIM attributes to endpoint attributes according to config.map
   const [endpointObj] = scimgateway.endpointMapper('outbound', userObj, config.map.user) // use [endpointObj, err] and if err, throw error to catch non supported attributes
 
+  // UID/GID Counter Integration - Validate that uidNumber and gidNumber are not provided
+  if (userObj.uidNumber || endpointObj.uidNumber) {
+    throw new Error('uidNumber is being calculated by SCIM and cannot be provided manually')
+  }
+  if (userObj.gidNumber || endpointObj.gidNumber) {
+    throw new Error('gidNumber is being calculated by SCIM and cannot be provided manually')
+  }
+
   // endpoint spesific attribute handling
   if (endpointObj.sAMAccountName !== undefined) { // Active Directory
     const userAccountControl = 512 // NORMAL_ACCOUNT
@@ -343,10 +352,29 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
   // endpointObj.objectClass is mandatory and must must match your ldap schema
   endpointObj.objectClass = config.entity[baseEntity].ldap.userObjectClasses // Active Directory: ["user", "person", "organizationalPerson", "top"]
 
-  // Ensure cn attribute is set for posixAccount compatibility
-  if (!endpointObj.cn && endpointObj.uid) {
-    endpointObj.cn = endpointObj.uid
+  // UID/GID Counter Integration - Assign uidNumber and gidNumber from counter
+  scimgateway.logDebug(baseEntity, 'Fetching next UID from LDAP counter...')
+  let counterClient: LdapCounterClient | null = null
+  let assignedUid: number
+  
+  try {
+    counterClient = new LdapCounterClient()
+    assignedUid = await counterClient.getNextUid()
+    scimgateway.logDebug(baseEntity, `Retrieved UID from counter: ${assignedUid}`)
+    
+    // Assign uidNumber and gidNumber (Unix standard: same value when no specific GID needed)
+    endpointObj.uidNumber = assignedUid.toString()
+    endpointObj.gidNumber = assignedUid.toString()
+    scimgateway.logDebug(baseEntity, `Assigned uidNumber=${assignedUid}, gidNumber=${assignedUid} to user ${userObj.userName}`)
+    
+  } catch (err: any) {
+    const counterErr = new Error(`Failed to get UID from counter: ${err.message}`)
+    scimgateway.logError(baseEntity, counterErr.message)
+    throw counterErr
   }
+
+  // Ensure cn attribute is set for posixAccount compatibility
+  console.log("endpointObj: ", JSON.stringify(endpointObj, null, 2))
 
   let base = ''
   const [userNamingAttr, scimAttr] = getNamingAttribute(baseEntity, 'user') // ['CN', 'userName']
@@ -362,8 +390,27 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
 
   try {
     await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    scimgateway.logDebug(baseEntity, `Successfully created user ${userObj.userName} with UID: ${assignedUid}`)
+    
+    // Increment counter after successful user creation
+    try {
+      await counterClient!.incrementCounter(assignedUid)
+      scimgateway.logDebug(baseEntity, `Successfully incremented UID counter from ${assignedUid} to ${assignedUid + 1}`)
+    } catch (counterErr: any) {
+      // Log warning but don't fail the entire operation since user was created successfully
+      scimgateway.logWarn(baseEntity, `WARNING: User created successfully but counter increment failed: ${counterErr.message}`)
+      scimgateway.logWarn(baseEntity, `Manual counter correction may be needed. User ${userObj.userName} has UID ${assignedUid}`)
+    } finally {
+      await counterClient!.disconnect()
+    }
+    
     return null
   } catch (err: any) {
+    // Ensure counter client is cleaned up on user creation failure
+    if (counterClient) {
+      await counterClient.disconnect()
+    }
+    
     const newErr = new Error(`${action} error: ${err.message}`)
     if (newErr.message.includes('ENTRY_EXISTS')) newErr.name += '#409' // customErrCode
     throw newErr

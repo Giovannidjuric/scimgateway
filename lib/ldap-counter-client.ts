@@ -1,0 +1,173 @@
+// Dedicated LDAP client for UID counter operations
+// Separate from main SCIM LDAP connection to handle different object classes
+
+import ldap from 'ldapjs'
+import dotenv from 'dotenv'
+
+// Load environment variables
+dotenv.config()
+
+export interface CounterConfig {
+  url: string
+  bindDN: string
+  bindPassword: string
+  counterDN: string
+  timeout?: number
+}
+
+export class LdapCounterClient {
+  private client: ldap.Client | null = null
+  private config: CounterConfig
+  private isConnected = false
+
+  constructor(config?: Partial<CounterConfig>) {
+    this.config = {
+      url: process.env.COUNTER_LDAP_URL || 'ldap://localhost:389',
+      bindDN: process.env.COUNTER_LDAP_BIND_DN || 'cn=admin,dc=iam,dc=asml,dc=com',
+      bindPassword: process.env.COUNTER_LDAP_BIND_PASSWORD || 'adminpassword',
+      counterDN: process.env.COUNTER_LDAP_COUNTER_DN || 'cn=uidNext,ou=users,dc=iam,dc=asml,dc=com',
+      timeout: 5000,
+      ...config
+    }
+  }
+
+  async connect(): Promise<void> {
+    if (this.isConnected && this.client) {
+      return
+    }
+
+    this.client = ldap.createClient({
+      url: this.config.url,
+      timeout: this.config.timeout,
+      connectTimeout: this.config.timeout
+    })
+
+    return new Promise<void>((resolve, reject) => {
+      this.client!.bind(this.config.bindDN, this.config.bindPassword, (err) => {
+        if (err) {
+          console.error('LDAP Counter Client: Bind failed:', err.message)
+          reject(new Error(`Counter LDAP bind failed: ${err.message}`))
+        } else {
+          this.isConnected = true
+          console.log('✅ LDAP Counter Client: Successfully connected and bound')
+          resolve()
+        }
+      })
+    })
+  }
+
+  async getNextUid(): Promise<number> {
+    if (!this.isConnected || !this.client) {
+      await this.connect()
+    }
+
+    return new Promise<number>((resolve, reject) => {
+      console.log(`🔍 Counter Client: Reading UID from ${this.config.counterDN}`)
+      
+      this.client!.search(this.config.counterDN, {
+        scope: 'base',
+        attributes: ['uidNumber']
+      }, (err, res) => {
+        if (err) {
+          console.error('Counter Client: Search failed:', err.message)
+          reject(new Error(`Counter search failed: ${err.message}`))
+          return
+        }
+
+        let uidNumber: number | null = null
+
+        res.on('searchEntry', (entry) => {
+          const uidAttr = entry.attributes.find(attr => attr.type === 'uidNumber')
+          if (uidAttr && uidAttr.values.length > 0) {
+            uidNumber = parseInt(uidAttr.values[0] as string, 10)
+            console.log(`✅ Counter Client: Retrieved UID from counter: ${uidNumber}`)
+          }
+        })
+
+        res.on('error', (err) => {
+          console.error('Counter Client: Search error:', err.message)
+          reject(new Error(`Counter search error: ${err.message}`))
+        })
+
+        res.on('end', () => {
+          if (uidNumber === null) {
+            reject(new Error('Counter entry found but no uidNumber attribute'))
+          } else {
+            resolve(uidNumber)
+          }
+        })
+      })
+    })
+  }
+
+  async incrementCounter(currentUid: number): Promise<void> {
+    if (!this.isConnected || !this.client) {
+      await this.connect()
+    }
+
+    const nextUid = currentUid + 1
+
+    return new Promise<void>((resolve, reject) => {
+      console.log(`🔄 Counter Client: Updating counter from ${currentUid} to ${nextUid}`)
+      
+      // Create modify operation to update uidNumber
+      const change = new ldap.Change({
+        operation: 'replace',
+        modification: new ldap.Attribute({
+          type: 'uidNumber',
+          values: [nextUid.toString()]
+        })
+      })
+
+      this.client!.modify(this.config.counterDN, change, (err) => {
+        if (err) {
+          console.error('Counter Client: Counter update failed:', err.message)
+          reject(new Error(`Counter update failed: ${err.message}`))
+        } else {
+          console.log(`✅ Counter Client: Successfully updated counter to ${nextUid}`)
+          resolve()
+        }
+      })
+    })
+  }
+
+  async testConnection(): Promise<boolean> {
+    try {
+      await this.connect()
+      const uid = await this.getNextUid()
+      console.log(`🧪 Counter Client: Test successful - current UID: ${uid}`)
+      return true
+    } catch (error) {
+      console.error('🚨 Counter Client: Test failed:', error)
+      return false
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.client) {
+      this.client.unbind()
+      this.client = null
+      this.isConnected = false
+      console.log('🔌 Counter Client: Disconnected')
+    }
+  }
+
+  // Static method for quick operations
+  static async getNextUidQuick(): Promise<number> {
+    const client = new LdapCounterClient()
+    try {
+      return await client.getNextUid()
+    } finally {
+      await client.disconnect()
+    }
+  }
+
+  static async incrementCounterQuick(currentUid: number): Promise<void> {
+    const client = new LdapCounterClient()
+    try {
+      await client.incrementCounter(currentUid)
+    } finally {
+      await client.disconnect()
+    }
+  }
+}
