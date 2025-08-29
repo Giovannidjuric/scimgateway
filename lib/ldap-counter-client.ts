@@ -42,7 +42,6 @@ export class LdapCounterClient {
           reject(new Error(`Counter LDAP bind failed: ${err.message}`))
         } else {
           this.isConnected = true
-          console.log('✅ LDAP Counter Client: Successfully connected and bound')
           resolve()
         }
       })
@@ -55,8 +54,6 @@ export class LdapCounterClient {
     }
 
     return new Promise<number>((resolve, reject) => {
-      console.log(`🔍 Counter Client: Reading UID from ${this.config.counterDN}`)
-      
       this.client!.search(this.config.counterDN, {
         scope: 'base',
         attributes: ['uidNumber']
@@ -73,7 +70,6 @@ export class LdapCounterClient {
           const uidAttr = entry.attributes.find(attr => attr.type === 'uidNumber')
           if (uidAttr && uidAttr.values.length > 0) {
             uidNumber = parseInt(uidAttr.values[0] as string, 10)
-            console.log(`✅ Counter Client: Retrieved UID from counter: ${uidNumber}`)
           }
         })
 
@@ -101,8 +97,6 @@ export class LdapCounterClient {
     const nextUid = currentUid + 1
 
     return new Promise<void>((resolve, reject) => {
-      console.log(`🔄 Counter Client: Updating counter from ${currentUid} to ${nextUid}`)
-      
       // Create modify operation to update uidNumber
       const change = new ldap.Change({
         operation: 'replace',
@@ -117,7 +111,6 @@ export class LdapCounterClient {
           console.error('Counter Client: Counter update failed:', err.message)
           reject(new Error(`Counter update failed: ${err.message}`))
         } else {
-          console.log(`✅ Counter Client: Successfully updated counter to ${nextUid}`)
           resolve()
         }
       })
@@ -127,11 +120,9 @@ export class LdapCounterClient {
   async testConnection(): Promise<boolean> {
     try {
       await this.connect()
-      const uid = await this.getNextUid()
-      console.log(`🧪 Counter Client: Test successful - current UID: ${uid}`)
+      await this.getNextUid()
       return true
     } catch (error) {
-      console.error('🚨 Counter Client: Test failed:', error)
       return false
     }
   }
@@ -141,7 +132,6 @@ export class LdapCounterClient {
       this.client.unbind()
       this.client = null
       this.isConnected = false
-      console.log('🔌 Counter Client: Disconnected')
     }
   }
 

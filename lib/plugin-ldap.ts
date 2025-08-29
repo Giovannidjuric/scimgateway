@@ -373,7 +373,6 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
     // Assign uidNumber and gidNumber (Unix standard: same value when no specific GID needed)
     endpointObj.uidNumber = assignedUid.toString()
     endpointObj.gidNumber = assignedUid.toString()
-    scimgateway.logDebug(baseEntity, `Assigned uidNumber=${assignedUid}, gidNumber=${assignedUid} to user ${userObj.userName}`)
     
   } catch (err: any) {
     const counterErr = new Error(`Failed to get UID from counter: ${err.message}`)
@@ -382,7 +381,6 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
   }
 
   // Ensure cn attribute is set for posixAccount compatibility
-  console.log("endpointObj: ", JSON.stringify(endpointObj, null, 2))
 
   let base = ''
   const [userNamingAttr, scimAttr] = getNamingAttribute(baseEntity, 'user') // ['CN', 'userName']
