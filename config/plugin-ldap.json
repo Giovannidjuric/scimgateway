@@ -146,6 +146,7 @@
           "isOpenLdap": true,
           "userBase": "ou=users,dc=iam,dc=asml,dc=com",
           "groupBase": "dc=iam,dc=asml,dc=com",
+          "counterDN": "cn=uidNext,ou=users,dc=iam,dc=asml,dc=com",
           "userFilter": null,
           "groupFilter": null,
           "allowModifyDN": true,
@@ -153,7 +154,7 @@
             "user": [
               {
                 "attribute": "uid",
-                "mapTo": "name.givenName"
+                "mapTo": "userName"
               }
             ],
             "group": [
@@ -213,8 +214,12 @@
           "mapTo": "gidNumber",
           "type": "integer"
         },
-        "cn": {
+        "uid": {
           "mapTo": "userName",
+          "type": "string"
+        },
+        "cn": {
+          "mapTo": "name.givenName",
           "type": "string"
         },
         "userAccountControl": {

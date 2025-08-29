@@ -1,11 +1,8 @@
 // Dedicated LDAP client for UID counter operations
-// Separate from main SCIM LDAP connection to handle different object classes
+// Uses shared configuration from plugin-ldap.json
 
 import ldap from 'ldapjs'
-import dotenv from 'dotenv'
-
-// Load environment variables
-dotenv.config()
+import * as utils from './utils'
 
 export interface CounterConfig {
   url: string
@@ -20,12 +17,8 @@ export class LdapCounterClient {
   private config: CounterConfig
   private isConnected = false
 
-  constructor(config?: Partial<CounterConfig>) {
+  constructor(config: CounterConfig) {
     this.config = {
-      url: process.env.COUNTER_LDAP_URL || 'ldap://localhost:389',
-      bindDN: process.env.COUNTER_LDAP_BIND_DN || 'cn=admin,dc=iam,dc=asml,dc=com',
-      bindPassword: process.env.COUNTER_LDAP_BIND_PASSWORD || 'adminpassword',
-      counterDN: process.env.COUNTER_LDAP_COUNTER_DN || 'cn=uidNext,ou=users,dc=iam,dc=asml,dc=com',
       timeout: 5000,
       ...config
     }
@@ -153,8 +146,8 @@ export class LdapCounterClient {
   }
 
   // Static method for quick operations
-  static async getNextUidQuick(): Promise<number> {
-    const client = new LdapCounterClient()
+  static async getNextUidQuick(config: CounterConfig): Promise<number> {
+    const client = new LdapCounterClient(config)
     try {
       return await client.getNextUid()
     } finally {
@@ -162,8 +155,8 @@ export class LdapCounterClient {
     }
   }
 
-  static async incrementCounterQuick(currentUid: number): Promise<void> {
-    const client = new LdapCounterClient()
+  static async incrementCounterQuick(config: CounterConfig, currentUid: number): Promise<void> {
+    const client = new LdapCounterClient(config)
     try {
       await client.incrementCounter(currentUid)
     } finally {

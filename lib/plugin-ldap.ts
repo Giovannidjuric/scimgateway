@@ -358,7 +358,15 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
   let assignedUid: number
   
   try {
-    counterClient = new LdapCounterClient()
+    // Build counter configuration from main plugin config with password decryption
+    const counterConfig = {
+      url: config.entity[baseEntity].baseUrls[0],
+      bindDN: config.entity[baseEntity].username,
+      bindPassword: config.entity[baseEntity].password, // Password is already decrypted by scimgateway framework
+      counterDN: config.entity[baseEntity].ldap.counterDN
+    }
+    
+    counterClient = new LdapCounterClient(counterConfig)
     assignedUid = await counterClient.getNextUid()
     scimgateway.logDebug(baseEntity, `Retrieved UID from counter: ${assignedUid}`)
     
@@ -397,9 +405,25 @@ scimgateway.createUser = async (baseEntity, userObj, ctx) => {
       await counterClient!.incrementCounter(assignedUid)
       scimgateway.logDebug(baseEntity, `Successfully incremented UID counter from ${assignedUid} to ${assignedUid + 1}`)
     } catch (counterErr: any) {
-      // Log warning but don't fail the entire operation since user was created successfully
-      scimgateway.logWarn(baseEntity, `WARNING: User created successfully but counter increment failed: ${counterErr.message}`)
-      scimgateway.logWarn(baseEntity, `Manual counter correction may be needed. User ${userObj.userName} has UID ${assignedUid}`)
+      // Counter increment failed - attempt rollback by deleting the user
+      scimgateway.logError(baseEntity, `Counter increment failed, attempting user rollback: ${counterErr.message}`)
+      
+      let deletionSucceeded = false
+      try {
+        // Delete the user we just created using the same base DN
+        await doRequest(baseEntity, 'del', base, {}, ctx)
+        scimgateway.logInfo(baseEntity, `Successfully rolled back user ${userObj.userName} due to counter failure`)
+        deletionSucceeded = true
+      } catch (deletionErr: any) {
+        scimgateway.logError(baseEntity, `CRITICAL: User ${userObj.userName} created with UID ${assignedUid} but counter increment AND rollback both failed`)
+        scimgateway.logError(baseEntity, `Counter error: ${counterErr.message}`)
+        scimgateway.logError(baseEntity, `Rollback error: ${deletionErr.message}`)
+        throw new Error(`Critical consistency error: User exists but counter is out of sync. Manual intervention required for ${userObj.userName} (UID: ${assignedUid})`)
+      }
+
+      if (deletionSucceeded) {
+        throw new Error(`User creation aborted: ${counterErr.message}`)
+      }
     } finally {
       await counterClient!.disconnect()
     }
