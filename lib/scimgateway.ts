@@ -485,8 +485,15 @@ export class ScimGateway {
       description: 'AppRoles',
       getMethod: 'getAppRoles',
     }
+    handler.Permissions = handler.permissions = {
+      description: 'Permission',
+      getMethod: 'getPermissions',
+      modifyMethod: 'modifyPermission',
+      createMethod: 'createPermission',
+      deleteMethod: 'deletePermission',
+    }
     /** handlers supported url paths */
-    const handlers = ['users', 'groups', 'bulk', 'serviceplans', 'approles', 'api', 'schemas', 'resourcetypes', 'serviceproviderconfig', 'serviceproviderconfigs', 'oauth', '.well-known', 'logger']
+    const handlers = ['users', 'groups', 'permissions', 'bulk', 'serviceplans', 'approles', 'api', 'schemas', 'resourcetypes', 'serviceproviderconfig', 'serviceproviderconfigs', 'oauth', '.well-known', 'logger']
 
     try {
       if (!fs.existsSync(configDir + '/wsdls')) fs.mkdirSync(configDir + '/wsdls')
@@ -2950,6 +2957,7 @@ export class ScimGateway {
         switch (apiEndpoint) {
           case 'GET users':
           case 'GET groups':
+          case 'GET permissions':
           case 'GET serviceplans':
             if (ctx.routeObj.id) await getHandlerId(ctx)
             else await getHandler(ctx)
@@ -2982,6 +2990,7 @@ export class ScimGateway {
             } else return await getHandlerLoggerSSE(ctx)
           case 'PATCH users':
           case 'PATCH groups':
+          case 'PATCH permissions':
             await patchHandler(ctx)
             return await onAfterHandle(ctx)
           case 'PATCH api':
@@ -2989,6 +2998,7 @@ export class ScimGateway {
             return await onAfterHandle(ctx)
           case 'PUT users':
           case 'PUT groups':
+          case 'PUT permissions':
             await putHandler(ctx)
             return await onAfterHandle(ctx)
           case 'PUT api':
@@ -2996,6 +3006,7 @@ export class ScimGateway {
             return await onAfterHandle(ctx)
           case 'POST users':
           case 'POST groups':
+          case 'POST permissions':
             await postHandler(ctx)
             return await onAfterHandle(ctx)
           case 'POST bulk':
@@ -3006,6 +3017,7 @@ export class ScimGateway {
             return await onAfterHandle(ctx)
           case 'DELETE users':
           case 'DELETE groups':
+          case 'DELETE permissions':
             await deleteHandler(ctx)
             return await onAfterHandle(ctx)
           case 'DELETE api':

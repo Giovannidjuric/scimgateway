@@ -694,7 +694,7 @@ scimgateway.getGroups = async (baseEntity, getObj, attributes, ctx) => {
 
   const [attrs] = scimgateway.endpointMapper('outbound', attributes, config.map.group) // SCIM/CustomSCIM => endpoint attribute naming
   const method = 'search'
-  const scope = 'sub'
+  const scope = 'one'
   let base = config.entity[baseEntity].ldap.groupBase
   let ldapOptions
 
@@ -1054,6 +1054,459 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
     return null
   } catch (err: any) {
     throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
+// getPermissions
+// =================================================
+scimgateway.getPermissions = async (baseEntity, getObj, attributes, ctx) => {
+  //
+  // "getObj" = { attribute: <>, operator: <>, value: <>, rawFilter: <>, startIndex: <>, count: <> }
+  // rawFilter is always included when filtering
+  // attribute, operator and value are included when requesting unique object or simpel filtering
+  // See comments in the "mandatory if-else logic - start"
+  //
+  // "attributes" is array of attributes to be returned - if empty, all supported attributes should be returned
+  // Should normally return all supported permission attributes having id, displayName and members as mandatory
+  // id and displayName are most often considered as "the same" having value = <PermissionName>
+  // Note, the value of returned 'id' will be used as 'id' in modifyPermission and deletePermission
+  // scimgateway will automatically filter response according to the attributes list
+  //
+  const action = 'getPermissions'
+  scimgateway.logDebug(baseEntity, `handling ${action} getObj=${getObj ? JSON.stringify(getObj) : ''} attributes=${attributes}`)
+  if (!config.entity[baseEntity]) throw new Error(`unsupported baseEntity: ${baseEntity}`)
+
+  const result: any = {
+    Resources: [],
+    totalResults: null,
+  }
+
+  if (!config?.map?.permission || !config.entity[baseEntity]?.ldap?.permissionBase) { // not using permissions
+    scimgateway.logDebug(baseEntity, `${action} skip permission handling - missing configuration endpoint.map.permission or permissionBase`)
+    return result
+  }
+
+  if (attributes.length < 1) {
+    for (const key in config.map.permission) {
+      if (config.map.permission[key].mapTo) {
+        attributes.push(config.map.permission[key].mapTo)
+      }
+    }
+  }
+
+  const [attrs] = scimgateway.endpointMapper('outbound', attributes, config.map.permission) // SCIM/CustomSCIM => endpoint attribute naming
+  const method = 'search'
+  const scope = 'sub'
+  let base = config.entity[baseEntity].ldap.permissionBase
+  let ldapOptions
+
+  const [permissionDisplayNameAttr, err1] = scimgateway.endpointMapper('outbound', 'displayName', config.map.permission) // e.g. 'displayName' => 'cn'
+  if (err1) throw new Error(`${action} error: ${err1.message}`)
+
+  // mandatory if-else logic - start
+  if (getObj.operator) {
+    if (getObj.operator === 'eq' && ['id', 'displayName', 'externalId'].includes(getObj.attribute)) {
+      // mandatory - unique filtering - single unique permission to be returned
+      if (getObj.attribute === 'id') { // lookup using dn or objectSid/objectGUID (Active Directory)
+        if (config.useSID_id) {
+          const sid = convertStringToSid(getObj.value) // sid using formatted string instead of default hex
+          if (!sid) throw new Error(`${action} error: ${getObj.attribute}=${getObj.value} - attribute having a none valid SID string`)
+          base = `<SID=${sid}>`
+        } else if (config.useGUID_id) {
+          const guid = Buffer.from(getObj.value, 'base64').toString('hex')
+          base = `<GUID=${guid}>`
+        } else {
+          // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+          // Only search for permissions when in getPermissions function to prevent cross-entity access
+          base = await unhashGroupIdOnly(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof base === 'string' && base.includes('%')) {
+            base = decodeURIComponent(base)
+          }
+        }
+        ldapOptions = {
+          attributes: attrs,
+        }
+      } else {
+        const [permissionIdAttr, err] = scimgateway.endpointMapper('outbound', getObj.attribute, config.map.permission)
+        if (err) throw new Error(`${action} error: ${err.message}`)
+        if (permissionIdAttr === 'objectSid') {
+          const sid = convertStringToSid(getObj.value)
+          if (!sid) throw new Error(`${action} error: ${getObj.attribute}=${getObj.value} - attribute having a none valid SID string`)
+          base = `<SID=${sid}>`
+          ldapOptions = {
+            attributes: attrs,
+          }
+        } else if (permissionIdAttr === 'objectGUID') {
+          const guid = Buffer.from(getObj.value, 'base64').toString('hex')
+          base = `<GUID=${guid}>`
+          ldapOptions = {
+            attributes: attrs,
+          }
+        } else { // search instead of lookup
+          const filter = createAndFilter(baseEntity, 'permission', [{ attribute: permissionIdAttr, value: getObj.value }])
+          ldapOptions = {
+            filter,
+            scope,
+            attributes: attrs,
+          }
+        }
+      }
+    } else if (getObj.operator === 'eq' && getObj.attribute === 'members.value') {
+      // mandatory - return all permissions the user 'id' (getObj.value) is member of
+      // Resources = [{ id: <id-permission>> , displayName: <displayName-permission>, members [{value: <id-user>}] }]
+      ldapOptions = 'getMemberOfPermissions'
+    } else {
+      // optional - simpel filtering
+      if (getObj.operator === 'eq') {
+        const [filterAttr, err] = scimgateway.endpointMapper('outbound', getObj.attribute, config.map.permission)
+        if (err) throw new Error(`${action} error: ${err.message}`)
+        const filter = createAndFilter(baseEntity, 'permission', [{ attribute: filterAttr, value: getObj.value }])
+        ldapOptions = {
+          filter,
+          scope,
+          attributes: attrs,
+        }
+      } else {
+        throw new Error(`${action} error: not supporting simpel filtering: ${getObj.rawFilter}`)
+      }
+    }
+  } else if (getObj.rawFilter) {
+    // optional - advanced filtering having and/or/not - use getObj.rawFilter
+    throw new Error(`${action} error: not supporting advanced filtering: ${getObj.rawFilter}`)
+  } else {
+    // mandatory - no filtering (!getObj.operator && !getObj.rawFilter) - all permissions to be returned
+    const filter = createAndFilter(baseEntity, 'permission', [{ attribute: permissionDisplayNameAttr, value: '*' }])
+    ldapOptions = {
+      filter,
+      scope,
+      attributes: attrs,
+    }
+  }
+  // mandatory if-else logic - end
+
+  if (!ldapOptions) throw new Error(`${action} error: mandatory if-else logic not fully implemented`)
+
+  try {
+    if (ldapOptions === 'getMemberOfPermissions') {
+      let memberValue = getObj.value
+      // For OpenLDAP with DN-based IDs, unhash the member ID if it's a hashed value
+      if (!config.useSID_id && !config.useGUID_id) {
+        try {
+          // Permissions can contain both users and other groups, so allow both entity types
+          memberValue = await unhashId(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof memberValue === 'string' && memberValue.includes('%')) {
+            memberValue = decodeURIComponent(memberValue)
+          }
+        } catch (err) {
+          // If unhashing fails, the value might already be a DN, use it directly
+          memberValue = getObj.value
+        }
+      }
+      result.Resources = await getMemberOfPermissions(baseEntity, memberValue, ctx)
+    }
+    else {
+      const permissions: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+      result.Resources = await Promise.all(permissions.map(async (permission: any) => { // Promise.all because of async map
+        if (config.useSID_id || config.useGUID_id) {
+          if (permission.member) {
+            const arr: string[] = []
+            if (Array.isArray(permission.member)) {
+              for (let i = 0; i < permission.member.length; i++) {
+                const id = await dnToSidGuid(baseEntity, permission.member[i], ctx)
+                if (!id) throw new Error(`dnToSidGuid() did not return any ${config.useSID_id ? 'objectSid' : 'objectGUID'} value for dn=${permission.member[i]}`)
+                arr.push(id)
+              }
+              permission.member = arr
+            } else {
+              const id = await dnToSidGuid(baseEntity, permission.member, ctx)
+              if (!id) throw new Error(`dnToSidGuid() did not return any ${config.useSID_id ? 'objectSid' : 'objectGUID'} value for ${permission.member}`)
+              permission.member = [id]
+            }
+          }
+        }
+        const scimPermission = scimgateway.endpointMapper('inbound', permission, config.map.permission)[0] // endpoint attribute naming => SCIM
+        
+        // Store the original DN for ETag calculation, then hash the ID for security
+        let originalDN: string | undefined
+        if (scimPermission.id && typeof scimPermission.id === 'string') {
+          originalDN = scimPermission.id // Store the plain DN
+          scimPermission.id = hashId(scimPermission.id) // Hash it for external use
+        }
+        
+        // Store original member DNs for ETag calculation before hashing
+        let originalMembers: any[] | undefined
+        if (scimPermission.members && Array.isArray(scimPermission.members)) {
+          // Deep copy original members for ETag calculation
+          originalMembers = scimPermission.members.map((member: any) => ({
+            ...member,
+            value: member.value // Keep original DN
+          }))
+          
+          // Hash member DNs for external API response
+          scimPermission.members = scimPermission.members.map((member: any) => {
+            if (member.value && typeof member.value === 'string') {
+              return { ...member, value: hashId(member.value) }
+            }
+            return member
+          })
+        }
+        
+        // Set plainId and originalMembers for enhanced ETag generation by scimgateway framework
+        if (originalDN) {
+          scimPermission.plainId = originalDN
+        }
+        if (originalMembers) {
+          scimPermission._originalMembers = originalMembers
+        }
+        
+        return scimPermission
+      }))
+    }
+
+    result.totalResults = result.Resources.length
+    return result
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
+// createPermission
+// =================================================
+scimgateway.createPermission = async (baseEntity, permissionObj, ctx) => {
+  const action = 'createPermission'
+  scimgateway.logDebug(baseEntity, `handling ${action} permissionObj=${JSON.stringify(permissionObj)}`)
+
+  if (!config.map.permission) throw new Error(`${action} error: missing configuration endpoint.map.permission`)
+  const permissionBase = config.entity[baseEntity].ldap.permissionBase
+
+  // convert SCIM attributes to endpoint attributes according to config.map
+  const [endpointObj] = scimgateway.endpointMapper('outbound', permissionObj, config.map.permission)
+
+  // For OpenLDAP, unhash member IDs to get original DNs
+  if (endpointObj.member && Array.isArray(endpointObj.member) && !config.useSID_id && !config.useGUID_id) {
+    for (let i = 0; i < endpointObj.member.length; i++) {
+      try {
+        // Permissions can contain both users and other groups as members
+        const originalDN = await unhashId(baseEntity, endpointObj.member[i], ctx)
+        // Decode URL encoding if present
+        if (typeof originalDN === 'string' && originalDN.includes('%')) {
+          endpointObj.member[i] = decodeURIComponent(originalDN)
+        } else {
+          endpointObj.member[i] = originalDN
+        }
+      } catch (err: any) {
+        // If unhashing fails, assume the value is already a DN
+        scimgateway.logDebug(baseEntity, `${action}: Could not unhash member ID ${endpointObj.member[i]}, using as-is: ${err.message}`)
+      }
+    }
+  }
+
+  // endpointObj.objectClass is mandatory and must must match your ldap schema
+  endpointObj.objectClass = config.entity[baseEntity].ldap.groupObjectClasses // Use same object classes as groups
+
+  let base = ''
+  const [permissionNamingAttr, scimAttr] = getNamingAttribute(baseEntity, 'permission') // ['CN', 'displayName']
+  const arr = scimAttr.split('.')
+  if (arr.length < 2) {
+    base = `${permissionNamingAttr}=${permissionObj[scimAttr]},${permissionBase}`
+  } else {
+    base = `${permissionNamingAttr}=${permissionObj[arr[0]][arr[1]]},${permissionBase}`
+  }
+
+  const method = 'add'
+  delete endpointObj.dn
+
+  try {
+    await doRequest(baseEntity, method, base, endpointObj, ctx)
+    const scimResult = await scimgateway.getPermissions(baseEntity, { attribute: 'id', operator: 'eq', value: base }, [], ctx)
+    if (Array.isArray(scimResult?.Resources) && scimResult.Resources.length === 1) {
+      return scimResult.Resources[0]
+    } else throw new Error('failed creating permission')
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
+// deletePermission
+// =================================================
+scimgateway.deletePermission = async (baseEntity, id, ctx) => {
+  const action = 'deletePermission'
+  scimgateway.logDebug(baseEntity, `handling ${action} id=${id}`)
+
+  let base
+  if (config.useSID_id || config.useGUID_id) base = id
+  else {
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
+
+  const method = 'del'
+
+  try {
+    await doRequest(baseEntity, method, base, {}, ctx)
+    return null
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
+// modifyPermission
+// =================================================
+scimgateway.modifyPermission = async (baseEntity, id, attrObj, ctx) => {
+  const action = 'modifyPermission'
+  scimgateway.logDebug(baseEntity, `handling ${action} id=${id} attrObj=${JSON.stringify(attrObj)}`)
+
+  let base
+  if (config.useSID_id || config.useGUID_id) base = id
+  else {
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
+
+  const [endpointObj] = scimgateway.endpointMapper('outbound', attrObj, config.map.permission)
+
+  // For OpenLDAP, unhash member IDs to get original DNs
+  if (!config.useSID_id && !config.useGUID_id) {
+    if (endpointObj.member) {
+      if (Array.isArray(endpointObj.member)) {
+        for (let i = 0; i < endpointObj.member.length; i++) {
+          if (endpointObj.member[i] && typeof endpointObj.member[i] === 'object') {
+            if (endpointObj.member[i].value) {
+              try {
+                const originalDN = await unhashId(baseEntity, endpointObj.member[i].value, ctx)
+                // Decode URL encoding if present
+                if (typeof originalDN === 'string' && originalDN.includes('%')) {
+                  endpointObj.member[i].value = decodeURIComponent(originalDN)
+                } else {
+                  endpointObj.member[i].value = originalDN
+                }
+              } catch (err: any) {
+                scimgateway.logDebug(baseEntity, `${action}: Could not unhash member ID ${endpointObj.member[i].value}, using as-is: ${err.message}`)
+              }
+            }
+          } else if (typeof endpointObj.member[i] === 'string') {
+            try {
+              const originalDN = await unhashId(baseEntity, endpointObj.member[i], ctx)
+              // Decode URL encoding if present
+              if (typeof originalDN === 'string' && originalDN.includes('%')) {
+                endpointObj.member[i] = decodeURIComponent(originalDN)
+              } else {
+                endpointObj.member[i] = originalDN
+              }
+            } catch (err: any) {
+              scimgateway.logDebug(baseEntity, `${action}: Could not unhash member ID ${endpointObj.member[i]}, using as-is: ${err.message}`)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const method = 'modify'
+  const ldapObj: any = {}
+
+  for (const key in endpointObj) {
+    if (Array.isArray(endpointObj[key])) {
+      ldapObj[key] = []
+      for (let i = 0; i < endpointObj[key].length; i++) {
+        if (endpointObj[key][i].operation && endpointObj[key][i].value !== undefined) {
+          // scimgateway converted data
+          const operation = endpointObj[key][i].operation
+          const val = endpointObj[key][i].value
+          if (operation === 'delete') {
+            if (!ldapObj[key]) ldapObj[key] = []
+            if (val && val !== '') ldapObj[key].push(new ldap.Change({ operation: 'delete', modification: { [key]: val } }))
+            else ldapObj[key].push(new ldap.Change({ operation: 'delete', modification: { [key]: [] } }))
+          } else { // add
+            if (!ldapObj[key]) ldapObj[key] = []
+            ldapObj[key].push(new ldap.Change({ operation: 'add', modification: { [key]: val } }))
+          }
+        } else {
+          // plugin formatted data (should not be used by plugin, but should be supported)
+          if (!ldapObj[key]) ldapObj[key] = []
+          ldapObj[key].push(endpointObj[key][i])
+        }
+      }
+    } else {
+      ldapObj[key] = new ldap.Change({ operation: 'replace', modification: { [key]: endpointObj[key] } })
+    }
+  }
+
+  // Check if we need to modify DN based on displayName change
+  const [permissionNamingAttr, scimAttr] = getNamingAttribute(baseEntity, 'permission')
+  const newCN = ldapObj[permissionNamingAttr]?.modification?.[permissionNamingAttr]
+  let newDN = null
+
+  if (newCN && config.entity[baseEntity]?.ldap?.allowModifyDN === true) {
+    newDN = `${permissionNamingAttr}=${newCN},${config.entity[baseEntity].ldap.permissionBase}`
+    if (newDN !== base) {
+      await doRequest(baseEntity, 'modifyDN', base, { newDN }, ctx)
+      base = newDN
+    }
+    delete ldapObj[permissionNamingAttr] // don't modify CN - already done by modifyDN
+  }
+
+  if (Object.keys(ldapObj).length > 0) {
+    try {
+      await doRequest(baseEntity, method, base, ldapObj, ctx)
+    } catch (err: any) {
+      throw new Error(`${action} error: ${err.message}`)
+    }
+  }
+
+  if (newDN) { // return object using new dn
+    const getObj = { attribute: 'id', operator: 'eq', value: newDN }
+    const res = await scimgateway.getPermissions(baseEntity, getObj, [], ctx)
+    return res // return full permission object to avoid scimgateway doing same getPermission() using original id/dn that now will fail
+  }
+  return null
+}
+
+// Helper function for getting member-of permissions (similar to getMemberOfGroups)
+const getMemberOfPermissions = async (baseEntity: string, userDn: string, ctx?: any): Promise<any[]> => {
+  if (!config.entity[baseEntity]?.ldap?.permissionBase) {
+    return []
+  }
+  
+  try {
+    const method = 'search'
+    const base = config.entity[baseEntity].ldap.permissionBase
+    const scope = 'sub'
+    const [attrs] = scimgateway.endpointMapper('outbound', ['id', 'displayName'], config.map.permission)
+    const filter = `(&(member=${userDn})(objectClass=*))`
+    
+    const ldapOptions = {
+      filter,
+      scope,
+      attributes: attrs,
+    }
+
+    const permissions = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    return permissions.map((permission: any) => {
+      const scimPermission = scimgateway.endpointMapper('inbound', permission, config.map.permission)[0]
+      
+      // Hash the ID for security
+      if (scimPermission.id && typeof scimPermission.id === 'string') {
+        scimPermission.id = hashId(scimPermission.id)
+      }
+      
+      return scimPermission
+    })
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `getMemberOfPermissions error: ${err.message}`)
+    return []
   }
 }
 
@@ -1457,6 +1910,27 @@ const createAndFilter = (baseEntity: string, type: string, arrObj: any) => {
         }
       }
       break
+    case 'permission':
+      // For permissions, use the same object classes as groups
+      for (let i = 0; i < config.entity[baseEntity].ldap.groupObjectClasses.length; i++) {
+        const f = new ldap.EqualityFilter({ attribute: 'objectClass', value: config.entity[baseEntity].ldap.groupObjectClasses[i] })
+        objFilters.push(f)
+      }
+      
+      // Since we're already using permissionBase as the search base,
+      // the LDAP search is already restricted to the ou=permissions subtree.
+      // No additional DN filtering needed - the search base provides the restriction.
+      
+      // Apply group filter if configured
+      if (config.entity[baseEntity].ldap.groupFilter) {
+        try {
+          const gf = ldap.parseFilter(config.entity[baseEntity].ldap.groupFilter)
+          objFilters.push(gf)
+        } catch (err: any) {
+          throw new Error(`configuration ldap.groupFilter: ${config.entity[baseEntity].ldap.groupFilter} - parseFilter error: ${err.message}`)
+        }
+      }
+      break
   }
 
   // put all into AndFilter
@@ -1839,6 +2313,10 @@ const getNamingAttribute = (baseEntity: string, type: string) => {
       arr = config.entity[baseEntity]?.ldap?.namingAttribute?.user
       break
     case 'group':
+      arr = config.entity[baseEntity]?.ldap?.namingAttribute?.group
+      break
+    case 'permission':
+      // For permissions, use the same naming attribute as groups
       arr = config.entity[baseEntity]?.ldap?.namingAttribute?.group
       break
     default:
