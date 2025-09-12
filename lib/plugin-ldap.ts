@@ -641,7 +641,9 @@ scimgateway.modifyUser = async (baseEntity, id, attrObj, ctx) => {
           }
         }
         // return full user object to avoid scimgateway doing same getUser() using original id/dn that now will fail
-        const getObj = { attribute: 'id', operator: 'eq', value: newDN }
+        // Need to hash the new DN since getUsers expects a hashed ID, not a plain DN
+        const hashedNewDN = hashId(newDN)
+        const getObj = { attribute: 'id', operator: 'eq', value: hashedNewDN }
         const res = await scimgateway.getUsers(baseEntity, getObj, [], ctx)
         return res
       }

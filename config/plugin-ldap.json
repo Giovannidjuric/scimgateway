@@ -21,7 +21,7 @@
       "basic": [
         {
           "username": "gwadmin",
-          "password": "password",
+          "password": "ZmM4MThlMjdkM2Y5ZTk1ZWQ5NjQzYzE2NzcxZGUzNTI6YWZmN2I3NmRlNGRjY2VhODgzNTQ5NmJmNmU2Nzk5MzQ=",
           "readOnly": false,
           "baseEntities": []
         }
@@ -141,7 +141,7 @@
           "ldap://localhost:1389"
         ],
         "username": "cn=admin,dc=iam,dc=asml,dc=com",
-        "password": "adminpassword",
+        "password": "NDQ4MjE1MWYwMDBmMzk1YzgzZWRhZjkwZjA4YmU1MTE6YTczMDk5NDc4ZDI1ZWNlMjVmZjUxNjMyNGUxZjM2Mjc=",
         "ldap": {
           "isOpenLdap": true,
           "userBase": "ou=users,dc=iam,dc=asml,dc=com",

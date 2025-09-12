@@ -1,0 +1,455 @@
+version: "3"
+
+tasks:
+  LDAP_BASEDN:
+    requires:
+      vars:
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+    cmds:
+    - |
+      if [ "{{.INSTANCE}}" = "asml" ]; then
+        echo "dc=iam,dc=asml,dc=com"
+      elif [ "{{.INSTANCE}}" = "customer" ]; then
+        echo "dc=auth,dc=guest,dc=org"
+      fi
+
+  publish:
+    requires:
+      vars:
+      - name: DOCKER_USERNAME
+      - name: DOCKER_PASSWORD
+      - name: VERSION
+    cmds:
+    - docker buildx build -t fcpscca-docker-repo.apps-artifactory.asml.com/scimgateway:$VERSION .
+    - echo $DOCKER_PASSWORD | docker login fcpscca-docker-repo.apps-artifactory.asml.com --username $DOCKER_USERNAME --password-stdin
+    - docker push fcpscca-docker-repo.apps-artifactory.asml.com/scimgateway:$VERSION
+
+  publish-dev:
+    requires:
+      vars:
+      - name: DOCKER_USERNAME
+      - name: DOCKER_PASSWORD
+      - name: VERSION
+    cmds:
+    - docker buildx build -t fcpscca-docker-repo.apps-artifactory.asml.com/scimgateway-dev:$VERSION .
+    - echo $DOCKER_PASSWORD | docker login fcpscca-docker-repo.apps-artifactory.asml.com --username $DOCKER_USERNAME --password-stdin
+    - docker push fcpscca-docker-repo.apps-artifactory.asml.com/scimgateway-dev:$VERSION
+
+  # note: https://github.com/mike-engel/jwt-cli
+  token:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+    cmds:
+    - |
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        echo "$RESULT" | jq -r '.result'
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  users-read:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+    cmds:
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Users")
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  user-read:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+      - name: USERNAME
+        enum: [ "asml", "customer" ]
+    cmds:
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      export USERNAME="{{.USERNAME}}"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Users/{{.USERNAME}})
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  user-create:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+    cmds:
+    - gomplate -f templates/api/user-create.json.tmpl --context vars=file://$(pwd)/templates/api/user-create.json.vars?type=application/json -o templates/api/user-create.json
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X POST "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Users" -d @templates/api/user-create.json)
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  user-delete:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: HASH_ID
+    cmds:
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X DELETE "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Users/{{.HASH_ID}}")
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  user-update:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: USERNAME
+    cmds:
+    - gomplate -f templates/api/user-update.json.tmpl --context vars=file://$(pwd)/templates/api/user-update.json.vars?type=application/json -o templates/api/user-update.json
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X PATCH "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Users/cn={{.USERNAME}},ou=users,${LDAP_BASEDN}" -d @templates/api/user-update.json)
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  groups-read:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+    cmds:
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups")
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  group-read:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: GROUPNAME
+    cmds:
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      export GROUPNAME="{{.GROUPNAME}}"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups/{{.GROUPNAME}}")
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi  
+
+  group-create:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+    cmds:
+    - |
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      export LDAP_BASEDN
+      gomplate -f templates/api/group-create.json.vars.tmpl -o templates/api/group-create.json.vars
+      gomplate -f templates/api/group-create.json.tmpl --context vars=file://$(pwd)/templates/api/group-create.json.vars?type=application/json -o templates/api/group-create.json
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X POST "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups" -d @templates/api/group-create.json)
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  group-delete:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: GROUPNAME
+    cmds:
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X DELETE "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups/cn={{.GROUPNAME}},ou=groups,${LDAP_BASEDN}")
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  group-update:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: GROUPNAME
+    cmds:
+    - |
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      export LDAP_BASEDN
+      gomplate -f templates/api/group-update.json.vars.tmpl -o templates/api/group-update.json.vars
+      gomplate -f templates/api/group-update.json.tmpl --context vars=file://$(pwd)/templates/api/group-update.json.vars?type=application/json -o templates/api/group-update.json
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X PATCH "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups/cn={{.GROUPNAME}},ou=groups,${LDAP_BASEDN}" -d @templates/api/group-update.json)
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  member-create:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: GROUPNAME
+    cmds:
+    - |
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      export LDAP_BASEDN
+      gomplate -f templates/api/member-create.json.vars.tmpl -o templates/api/member-create.json.vars
+      gomplate -f templates/api/member-create.json.tmpl --context vars=file://$(pwd)/templates/api/member-create.json.vars?type=application/json -o templates/api/member-create.json
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X PATCH "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups/cn={{.GROUPNAME}},ou=groups,${LDAP_BASEDN}" -d @templates/api/member-create.json)
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi
+
+  member-delete:
+    requires:
+      vars:
+      - name: CLIENT_NAME
+      - name: CLIENT_SECRET
+      - name: KEYCLOAK_ADDRESS
+      - name: KEYCLOAK_SUBPATH
+      - name: INSTANCE
+        enum: [ "asml", "customer" ]
+      - name: GROUPNAME
+    cmds:
+    - |
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      export LDAP_BASEDN
+      gomplate -f templates/api/member-delete.json.vars.tmpl -o templates/api/member-delete.json.vars
+      gomplate -f templates/api/member-delete.json.tmpl --context vars=file://$(pwd)/templates/api/member-delete.json.vars?type=application/json -o templates/api/member-delete.json
+    - |
+      export CLIENT_NAME="{{.CLIENT_NAME}}"
+      export CLIENT_SECRET="{{.CLIENT_SECRET}}"
+      export KEYCLOAK_ADDRESS="{{.KEYCLOAK_ADDRESS}}"
+      export KEYCLOAK_SUBPATH="{{.KEYCLOAK_SUBPATH}}"
+      export INSTANCE="{{.INSTANCE}}"
+      LDAP_BASEDN="$(task LDAP_BASEDN)"
+      RESULT=$(bash exec/jwks.sh)
+      if echo "$RESULT" | jq -e '.error == null' >/dev/null 2>&1; then
+        TOKEN=$(echo "$RESULT" | jq -r '.result')
+        RESPONSE=$(curl -ks -H "Authorization: Bearer $TOKEN" -X PATCH "https://scim-{{.INSTANCE}}.iam.local/scim/v2/Groups/cn={{.GROUPNAME}},ou=groups,${LDAP_BASEDN}" -d @templates/api/member-delete.json)
+        if echo "$RESPONSE" | jq . >/dev/null 2>&1; then
+          echo "$RESPONSE" | jq
+        else
+          echo "$RESPONSE"
+        fi
+      else
+        echo "$RESULT" | jq -r '.error' >&2
+        exit 1
+      fi

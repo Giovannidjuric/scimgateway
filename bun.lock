@@ -12,6 +12,7 @@
         "@types/lokijs": "^1.5.14",
         "@types/tedious": "^18.0.0",
         "dot-object": "^2.1.5",
+        "dotenv": "^17.2.1",
         "fold-to-ascii": "^5.0.1",
         "https-proxy-agent": "^7.0.6",
         "hyco-https": "^1.4.5",
@@ -309,6 +310,8 @@
     "define-lazy-prop": ["define-lazy-prop@3.0.0", "", {}, "sha512-N+MeXYoqr3pOgn8xfyRPREN7gHakLYjhsHhWGT3fWAiL4IkAt0iDw14QiiEm2bE30c5XX5q0FtAA3CK5f9/BUg=="],
 
     "dot-object": ["dot-object@2.1.5", "", { "dependencies": { "commander": "^6.1.0", "glob": "^7.1.6" }, "bin": { "dot-object": "bin/dot-object" } }, "sha512-xHF8EP4XH/Ba9fvAF2LDd5O3IITVolerVV6xvkxoM8zlGEiCUrggpAnHyOoKJKCrhvPcGATFAUwIujj7bRG5UA=="],
+
+    "dotenv": ["dotenv@17.2.1", "", {}, "sha512-kQhDYKZecqnM0fCnzI5eIv5L4cAe/iRI+HqMbO/hbRdTAeXDG+M9FjipUxNfbARuEg4iHIbhnhs78BCHNbSxEQ=="],
 
     "dtrace-provider": ["dtrace-provider@0.8.8", "", { "dependencies": { "nan": "^2.14.0" } }, "sha512-b7Z7cNtHPhH9EJhNNbbeqTcXB8LGFFZhq1PGgEvpeHlzd36bhbdTWoE/Ba/YguqpBSlAPKnARWhVlhunCMwfxg=="],
 

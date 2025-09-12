@@ -1,27 +1,25 @@
 {
   "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
-  "userName": "tobiahs",
+  "userName": "counter-tester-10003",
   "name": {
-    "givenName": "tobi",
-    "familyName": "song"
+    "givenName": "Giovanni",
+    "familyName": "Djuric",
+    "formatted": "Giovanni Djuric"
   },
-  "displayName": "tobi",
   "emails": [
     {
     "type": "work",
-    "value": "tobiahst@domain.com"
+    "value": "giovanni@domain.com"
     },
         {
     "type": "home",
-    "value": "tobiahst@domain.com"
+    "value": "giovanni@domain.com"
     }
   ],
-  "uidNumber": 65100,
-  "gidNumber": 65100,
   "entitlements": [
     {
       "type": "homeDirectory",
-      "value": "/home/tobiahs"
+      "value": "/home/giovanni"
     },
     {
       "type": "secret",
