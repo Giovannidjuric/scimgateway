@@ -244,6 +244,41 @@ export class ScimGateway {
   */
   modifyGroup!: (baseEntity: string, id: string, attrObj: Record<string, any>, ctx?: undefined | Record<string, any>) => any
 
+  /**
+   * getPermissions method is defined at the plugin and should return permissions from endpoint according to getObj (rawFilter) and attributes parameter - if getObj.operator and getObj.rawFilter not defined, all permissions should be returned
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Permissions gives baseEntity=loki2
+   * @param getObj same as getUsers
+   * @param attributes array of attributes to be returned - if empty, all supported attributes should be returned
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns same structure as getUsers but for permission objects
+   */
+  getPermissions!: (baseEntity: string, getObj: Record<string, any>, attributes: Array<string>, ctx?: undefined | Record<string, any>) => any
+  /**
+   * createPermission method is defined at the plugin and should create permission at endpoint
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Permissions gives baseEntity=loki2
+   * @param permissionObj permission object to be created
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns permission object with unique endpoint id
+   */
+  createPermission!: (baseEntity: string, permissionObj: Record<string, any>, ctx?: undefined | Record<string, any>) => any
+  /**
+   * deletePermission method is defined at the plugin and should delete permission from endpoint
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Permissions gives baseEntity=loki2
+   * @param id unique permission id
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns null | throw error
+   */
+  deletePermission!: (baseEntity: string, id: string, ctx?: undefined | Record<string, any>) => any
+  /**
+   * modifyPermission method is defined at the plugin and should modify permission at endpoint
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Permissions gives baseEntity=loki2
+   * @param id unique permission id
+   * @param attrObj contains permission attributes to be modified
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns null | throw error
+   */
+  modifyPermission!: (baseEntity: string, id: string, attrObj: Record<string, any>, ctx?: undefined | Record<string, any>) => any
+
   /** getServicePlans is used by plugin-entra for retrieving Entra ID license plans */
   getServicePlans!: (baseEntity: string, getObj: Record<string, any>, attributes: Array<string>, ctx?: undefined | Record<string, any>) => any
 

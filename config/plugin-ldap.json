@@ -21,7 +21,7 @@
       "basic": [
         {
           "username": "gwadmin",
-          "password": "YjM1NDljOWMxMGVmNDFjYzI0NjNhOTViNmZjZWJkYjg6NTc0YWFlYTgzYTYyMjg1YWU3NWU5NWE0NThhMDZiMTM=",
+          "password": "ZWZhNzJlNTRiNWJjZjU4MjFlOGM0OWMzYTU4MTA5YzQ6NGUyMDNhNjc1MWRmOTM1ZmMxNTc3OTc3YWNkMzdjYWU=",
           "readOnly": false,
           "baseEntities": []
         }
@@ -141,12 +141,12 @@
           "ldap://localhost:1389"
         ],
         "username": "cn=admin,dc=iam,dc=asml,dc=com",
-        "password": "NjFkZWM3NjU2MjhhYzJjN2I2NWU0M2ZlMDM0N2ZhNGU6YTQzZmNmY2NhNWExMzA2MzNkMDdhYmRkMzAzMjdjMTA=",
+        "password": "ZDZiZGRmOWYzM2M3NDAzZTlkYWI4MzA5NTVhZTlkZTU6OWY5NzhhMDg4YTljZDFiNTQ0YzI0NGMxY2I3YzNjOWQ=",
         "ldap": {
           "isOpenLdap": true,
           "userBase": "ou=users,dc=iam,dc=asml,dc=com",
           "groupBase": "ou=groups,dc=iam,dc=asml,dc=com",
-          "permissionBase": "ou=permissions,ou=groups,dc=iam,dc=asml,dc=com",
+          "permissionBase": "ou=permissions,dc=iam,dc=asml,dc=com",
           "counterDN": "cn=uidNext,ou=users,dc=iam,dc=asml,dc=com",
           "userFilter": null,
           "groupFilter": null,
@@ -315,6 +315,10 @@
         },
         "cn": {
           "mapTo": "displayName",
+          "type": "string"
+        },
+        "description": {
+          "mapTo": "description",
           "type": "string"
         },
         "gidNumber": {

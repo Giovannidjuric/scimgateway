@@ -1062,7 +1062,7 @@ scimgateway.modifyGroup = async (baseEntity, id, attrObj, ctx) => {
 // =================================================
 // getPermissions
 // =================================================
-scimgateway.getPermissions = async (baseEntity, getObj, attributes, ctx) => {
+scimgateway.getPermissions = async (baseEntity: string, getObj: Record<string, any>, attributes: Array<string>, ctx?: Record<string, any>) => {
   //
   // "getObj" = { attribute: <>, operator: <>, value: <>, rawFilter: <>, startIndex: <>, count: <> }
   // rawFilter is always included when filtering
@@ -1278,7 +1278,7 @@ scimgateway.getPermissions = async (baseEntity, getObj, attributes, ctx) => {
 // =================================================
 // createPermission
 // =================================================
-scimgateway.createPermission = async (baseEntity, permissionObj, ctx) => {
+scimgateway.createPermission = async (baseEntity: string, permissionObj: Record<string, any>, ctx?: Record<string, any>) => {
   const action = 'createPermission'
   scimgateway.logDebug(baseEntity, `handling ${action} permissionObj=${JSON.stringify(permissionObj)}`)
 
@@ -1338,7 +1338,7 @@ scimgateway.createPermission = async (baseEntity, permissionObj, ctx) => {
 // =================================================
 // deletePermission
 // =================================================
-scimgateway.deletePermission = async (baseEntity, id, ctx) => {
+scimgateway.deletePermission = async (baseEntity: string, id: string, ctx?: Record<string, any>) => {
   const action = 'deletePermission'
   scimgateway.logDebug(baseEntity, `handling ${action} id=${id}`)
 
@@ -1365,7 +1365,7 @@ scimgateway.deletePermission = async (baseEntity, id, ctx) => {
 // =================================================
 // modifyPermission
 // =================================================
-scimgateway.modifyPermission = async (baseEntity, id, attrObj, ctx) => {
+scimgateway.modifyPermission = async (baseEntity: string, id: string, attrObj: Record<string, any>, ctx?: Record<string, any>) => {
   const action = 'modifyPermission'
   scimgateway.logDebug(baseEntity, `handling ${action} id=${id} attrObj=${JSON.stringify(attrObj)}`)
 
@@ -1408,8 +1408,8 @@ scimgateway.modifyPermission = async (baseEntity, id, attrObj, ctx) => {
   if (config.useSID_id) base = `<SID=${id}>`
   else if (config.useGUID_id) base = `<GUID=${id}>`
   else {
-    // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
-    base = await unhashId(baseEntity, id, ctx)
+    // For OpenLDAP with DN-based IDs, unhash the permission ID to get the original DN
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
     // Decode URL encoding if present
     if (typeof base === 'string' && base.includes('%')) {
       base = decodeURIComponent(base)
@@ -1538,7 +1538,18 @@ const unhashId = async (baseEntity: string, hashedId: string, ctx: any): Promise
   } catch (err: any) {
     scimgateway.logDebug(baseEntity, `${action}: Error searching groups: ${err.message}`)
   }
-  
+
+  // Then try to find permission with this hashed ID
+  try {
+    const permissionResult = await searchByHashedId(baseEntity, hashedId, 'permission', ctx)
+    if (permissionResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found permission DN: ${permissionResult}`)
+      return permissionResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching permissions: ${err.message}`)
+  }
+
   // If direct search fails, try alternative approach with full object retrieval
   // This handles cases where DN format might differ between searches
   try {
@@ -1638,7 +1649,48 @@ const searchByHashedIdAlternative = async (baseEntity: string, hashedId: string,
   } catch (err: any) {
     scimgateway.logDebug(baseEntity, `${action}: Error searching groups: ${err.message}`)
   }
-  
+
+  // Try permissions if group search fails
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.permissionBase
+    if (base) {
+      const objectClasses = config.entity[baseEntity].ldap.groupObjectClasses // permissions use same object classes as groups
+
+      const objFilters: ldap.EqualityFilter[] = []
+      for (const objClass of objectClasses) {
+        objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+      }
+
+      const filter = new ldap.AndFilter({ filters: objFilters })
+      const ldapOptions = {
+        filter,
+        scope,
+        attributes: [], // Get all attributes
+      }
+
+      const permissions: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+      scimgateway.logDebug(baseEntity, `${action}: Found ${permissions?.length || 0} permissions to check`)
+
+      if (permissions && Array.isArray(permissions)) {
+        for (const permission of permissions) {
+          const scimObj = scimgateway.endpointMapper('inbound', permission, config.map.permission)[0]
+          if (scimObj.id && typeof scimObj.id === 'string') {
+            const permissionIdHash = hashId(encodeURIComponent(scimObj.id))
+            scimgateway.logDebug(baseEntity, `${action}: Permission ${scimObj.displayName || 'unknown'}: ${scimObj.id} -> ${permissionIdHash}`)
+            if (permissionIdHash === hashedId) {
+              scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! Permission DN: ${scimObj.id}`)
+              return scimObj.id
+            }
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching permissions: ${err.message}`)
+  }
+
   scimgateway.logDebug(baseEntity, `${action}: No match found for hash: ${hashedId}`)
   return null
 }
@@ -1646,19 +1698,26 @@ const searchByHashedIdAlternative = async (baseEntity: string, hashedId: string,
 //
 // searchByHashedId - searches for objects and compares hashed DNs
 //
-const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'user' | 'group', ctx: any): Promise<string | null> => {
+const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'user' | 'group' | 'permission', ctx: any): Promise<string | null> => {
   const action = 'searchByHashedId'
   const method = 'search'
   const scope = 'sub'
   let base: string
   let objectClasses: string[]
-  
+
   if (type === 'user') {
     base = config.entity[baseEntity].ldap.userBase
     objectClasses = config.entity[baseEntity].ldap.userObjectClasses
-  } else {
+  } else if (type === 'group') {
     base = config.entity[baseEntity].ldap.groupBase
     objectClasses = config.entity[baseEntity].ldap.groupObjectClasses
+  } else { // permission
+    base = config.entity[baseEntity].ldap.permissionBase
+    if (!base) {
+      scimgateway.logDebug(baseEntity, `${action}: No permissionBase configured`)
+      return null
+    }
+    objectClasses = config.entity[baseEntity].ldap.groupObjectClasses // permissions use same object classes as groups
   }
   
   scimgateway.logDebug(baseEntity, `${action}: Searching ${type}s in base: ${base}`)
@@ -1775,7 +1834,18 @@ const unhashGroupIdOnly = async (baseEntity: string, hashedId: string, ctx: any)
       return groupResult
     }
   } catch (err: any) {
-    scimgateway.logDebug(baseEntity, `${action}: Error in DN search: ${err.message}`)
+    scimgateway.logDebug(baseEntity, `${action}: Error in group DN search: ${err.message}`)
+  }
+
+  // Then try the efficient DN-only search for permissions
+  try {
+    const permissionResult = await searchByHashedId(baseEntity, hashedId, 'permission', ctx)
+    if (permissionResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found permission DN: ${permissionResult}`)
+      return permissionResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in permission DN search: ${err.message}`)
   }
   
   // If that fails, try the alternative search that processes through SCIM mapper (groups only)
@@ -1813,10 +1883,50 @@ const unhashGroupIdOnly = async (baseEntity: string, hashedId: string, ctx: any)
       }
     }
   } catch (err: any) {
-    scimgateway.logDebug(baseEntity, `${action}: Error in alternative search: ${err.message}`)
+    scimgateway.logDebug(baseEntity, `${action}: Error in alternative group search: ${err.message}`)
   }
-  
-  throw new Error(`${action} error: group not found for hashed ID: ${hashedId}`)
+
+  // If group search fails, try alternative search for permissions
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.permissionBase
+    if (base) {
+      const objectClasses = config.entity[baseEntity].ldap.groupObjectClasses // permissions use same object classes as groups
+
+      const objFilters: ldap.EqualityFilter[] = []
+      for (const objClass of objectClasses) {
+        objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+      }
+
+      const filter = new ldap.AndFilter({ filters: objFilters })
+      const ldapOptions = {
+        filter,
+        scope,
+        attributes: [], // Get all attributes like in normal getPermissions operation
+      }
+
+      const permissions: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+      scimgateway.logDebug(baseEntity, `${action}: Found ${permissions.length} permissions to check`)
+
+      for (const permission of permissions) {
+        // Process the permission object similar to how it's done in getPermissions
+        const scimObj = scimgateway.endpointMapper('inbound', permission, config.map.permission)[0]
+        if (scimObj.id && typeof scimObj.id === 'string') {
+          const permissionIdHash = hashId(scimObj.id)
+          scimgateway.logDebug(baseEntity, `${action}: Permission ${scimObj.displayName || 'unknown'}: ${scimObj.id} -> ${permissionIdHash}`)
+          if (permissionIdHash === hashedId) {
+            scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! Permission DN: ${scimObj.id}`)
+            return scimObj.id
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in alternative permission search: ${err.message}`)
+  }
+
+  throw new Error(`${action} error: group or permission not found for hashed ID: ${hashedId}`)
 }
 
 const _serviceClient: Record<string, any> = {}
