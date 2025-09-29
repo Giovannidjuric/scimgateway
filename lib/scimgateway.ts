@@ -279,6 +279,41 @@ export class ScimGateway {
    */
   modifyPermission!: (baseEntity: string, id: string, attrObj: Record<string, any>, ctx?: undefined | Record<string, any>) => any
 
+  /**
+   * getRoles method is defined at the plugin and should return roles from endpoint according to getObj and attributes parameter - if getObj.operator and getObj.rawFilter not defined, all roles should be returned
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Roles gives baseEntity=loki2
+   * @param getObj same as getUsers
+   * @param attributes array of attributes to be returned - if empty, all supported attributes should be returned
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns same structure as getUsers but for role objects
+   */
+  getRoles!: (baseEntity: string, getObj: Record<string, any>, attributes: Array<string>, ctx?: undefined | Record<string, any>) => any
+  /**
+   * createRole method is defined at the plugin and should create role at endpoint
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Roles gives baseEntity=loki2
+   * @param roleObj role object to be created
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns role object with unique endpoint id
+   */
+  createRole!: (baseEntity: string, roleObj: Record<string, any>, ctx?: undefined | Record<string, any>) => any
+  /**
+   * deleteRole method is defined at the plugin and should delete role from endpoint
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Roles gives baseEntity=loki2
+   * @param id unique role id
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns null | throw error
+   */
+  deleteRole!: (baseEntity: string, id: string, ctx?: undefined | Record<string, any>) => any
+  /**
+   * modifyRole method is defined at the plugin and should modify role at endpoint
+   * @param baseEntity used for multi tenant or multi endpoint support, either "undefined" or set by request url e.g., http://localhost:8880/loki2/Roles gives baseEntity=loki2
+   * @param id unique role id
+   * @param attrObj contains role attributes to be modified
+   * @param ctx if plugin authPassThroughAllowed is set to true, ctx contains authorization header that can be used in the communication with endpoint
+   * @returns null | throw error
+   */
+  modifyRole!: (baseEntity: string, id: string, attrObj: Record<string, any>, ctx?: undefined | Record<string, any>) => any
+
   /** getServicePlans is used by plugin-entra for retrieving Entra ID license plans */
   getServicePlans!: (baseEntity: string, getObj: Record<string, any>, attributes: Array<string>, ctx?: undefined | Record<string, any>) => any
 
@@ -527,8 +562,15 @@ export class ScimGateway {
       createMethod: 'createPermission',
       deleteMethod: 'deletePermission',
     }
+    handler.Roles = handler.roles = {
+      description: 'Role',
+      getMethod: 'getRoles',
+      modifyMethod: 'modifyRole',
+      createMethod: 'createRole',
+      deleteMethod: 'deleteRole',
+    }
     /** handlers supported url paths */
-    const handlers = ['users', 'groups', 'permissions', 'bulk', 'serviceplans', 'approles', 'api', 'schemas', 'resourcetypes', 'serviceproviderconfig', 'serviceproviderconfigs', 'oauth', '.well-known', 'logger']
+    const handlers = ['users', 'groups', 'permissions', 'roles', 'bulk', 'serviceplans', 'approles', 'api', 'schemas', 'resourcetypes', 'serviceproviderconfig', 'serviceproviderconfigs', 'oauth', '.well-known', 'logger']
 
     try {
       if (!fs.existsSync(configDir + '/wsdls')) fs.mkdirSync(configDir + '/wsdls')
@@ -2993,6 +3035,7 @@ export class ScimGateway {
           case 'GET users':
           case 'GET groups':
           case 'GET permissions':
+          case 'GET roles':
           case 'GET serviceplans':
             if (ctx.routeObj.id) await getHandlerId(ctx)
             else await getHandler(ctx)
@@ -3026,6 +3069,7 @@ export class ScimGateway {
           case 'PATCH users':
           case 'PATCH groups':
           case 'PATCH permissions':
+          case 'PATCH roles':
             await patchHandler(ctx)
             return await onAfterHandle(ctx)
           case 'PATCH api':
@@ -3034,6 +3078,7 @@ export class ScimGateway {
           case 'PUT users':
           case 'PUT groups':
           case 'PUT permissions':
+          case 'PUT roles':
             await putHandler(ctx)
             return await onAfterHandle(ctx)
           case 'PUT api':
@@ -3042,6 +3087,7 @@ export class ScimGateway {
           case 'POST users':
           case 'POST groups':
           case 'POST permissions':
+          case 'POST roles':
             await postHandler(ctx)
             return await onAfterHandle(ctx)
           case 'POST bulk':
@@ -3053,6 +3099,7 @@ export class ScimGateway {
           case 'DELETE users':
           case 'DELETE groups':
           case 'DELETE permissions':
+          case 'DELETE roles':
             await deleteHandler(ctx)
             return await onAfterHandle(ctx)
           case 'DELETE api':
@@ -3131,8 +3178,8 @@ export class ScimGateway {
             let request = new Request(new URL(req.url ?? '', `${protocol}://${req.headers.host}`), {
               method: req.method,
               headers: new Headers(req.headers as any),
+              // @ts-expect-error body type mismatch and duplex not defined in RequestInit interface
               body: body,
-              // @ts-expect-error duplex not defined in RequestInit interface
               duplex: body ? 'half' : undefined,
             }) as Request & { raw: IncomingMessage }
             request.raw = req

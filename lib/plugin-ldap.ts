@@ -1276,6 +1276,222 @@ scimgateway.getPermissions = async (baseEntity: string, getObj: Record<string, a
 }
 
 // =================================================
+// getRoles
+// =================================================
+scimgateway.getRoles = async (baseEntity: string, getObj: Record<string, any>, attributes: Array<string>, ctx?: Record<string, any>) => {
+  //
+  // "getObj" = { attribute: <>, operator: <>, value: <>, rawFilter: <>, startIndex: <>, count: <> }
+  // rawFilter is always included when filtering
+  // attribute, operator and value are included when requesting unique object or simpel filtering
+  // See comments in the "mandatory if-else logic - start"
+  //
+  // "attributes" is array of attributes to be returned - if empty, all supported attributes should be returned
+  // Should normally return all supported role attributes having id, displayName and members as mandatory
+  // id and displayName are most often considered as "the same" having value = <RoleName>
+  // Note, the value of returned 'id' will be used as 'id' in modifyRole and deleteRole
+  // scimgateway will automatically filter response according to the attributes list
+  //
+  const action = 'getRoles'
+  scimgateway.logDebug(baseEntity, `handling ${action} getObj=${getObj ? JSON.stringify(getObj) : ''} attributes=${attributes}`)
+  if (!config.entity[baseEntity]) throw new Error(`unsupported baseEntity: ${baseEntity}`)
+
+  const result: any = {
+    Resources: [],
+    totalResults: null,
+  }
+
+  if (!config?.map?.role || !config.entity[baseEntity]?.ldap?.roleBase) { // not using roles
+    scimgateway.logDebug(baseEntity, `${action} skip role handling - missing configuration endpoint.map.role or roleBase`)
+    return result
+  }
+
+  if (attributes.length < 1) {
+    for (const key in config.map.role) {
+      if (config.map.role[key].mapTo) {
+        attributes.push(config.map.role[key].mapTo)
+      }
+    }
+  }
+
+  const [attrs] = scimgateway.endpointMapper('outbound', attributes, config.map.role) // SCIM/CustomSCIM => endpoint attribute naming
+  const method = 'search'
+  const scope = 'sub'
+  let base = config.entity[baseEntity].ldap.roleBase
+  let ldapOptions
+
+  const [roleDisplayNameAttr, err1] = scimgateway.endpointMapper('outbound', 'displayName', config.map.role) // e.g. 'displayName' => 'cn'
+  if (err1) throw new Error(`${action} error: ${err1.message}`)
+
+  // mandatory if-else logic - start
+  if (getObj.operator) {
+    if (getObj.operator === 'eq' && ['id', 'displayName', 'externalId'].includes(getObj.attribute)) {
+      // mandatory - unique filtering - single unique role to be returned
+      if (getObj.attribute === 'id') { // lookup using dn or objectSid/objectGUID (Active Directory)
+        if (config.useSID_id) {
+          const sid = convertStringToSid(getObj.value) // sid using formatted string instead of default hex
+          if (!sid) throw new Error(`${action} error: ${getObj.attribute}=${getObj.value} - attribute having a none valid SID string`)
+          base = `<SID=${sid}>`
+        } else if (config.useGUID_id) {
+          const guid = Buffer.from(getObj.value, 'base64').toString('hex')
+          base = `<GUID=${guid}>`
+        } else {
+          // For OpenLDAP with DN-based IDs, unhash the ID to get the original DN
+          // Only search for roles when in getRoles function to prevent cross-entity access
+          base = await unhashGroupIdOnly(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof base === 'string' && base.includes('%')) {
+            base = decodeURIComponent(base)
+          }
+        }
+        ldapOptions = {
+          attributes: attrs,
+        }
+      } else {
+        const [roleIdAttr, err] = scimgateway.endpointMapper('outbound', getObj.attribute, config.map.role)
+        if (err) throw new Error(`${action} error: ${err.message}`)
+        if (roleIdAttr === 'objectSid') {
+          const sid = convertStringToSid(getObj.value)
+          if (!sid) throw new Error(`${action} error: ${getObj.attribute}=${getObj.value} - attribute having a none valid SID string`)
+          base = `<SID=${sid}>`
+          ldapOptions = {
+            attributes: attrs,
+          }
+        } else if (roleIdAttr === 'objectGUID') {
+          const guid = Buffer.from(getObj.value, 'base64').toString('hex')
+          base = `<GUID=${guid}>`
+          ldapOptions = {
+            attributes: attrs,
+          }
+        } else { // search instead of lookup
+          const filter = createAndFilter(baseEntity, 'role', [{ attribute: roleIdAttr, value: getObj.value }])
+          ldapOptions = {
+            filter,
+            scope,
+            attributes: attrs,
+          }
+        }
+      }
+    } else if (getObj.operator === 'eq' && getObj.attribute === 'members.value') {
+      // mandatory - return all roles the user 'id' (getObj.value) is member of
+      // Resources = [{ id: <id-role>> , displayName: <displayName-role>, members [{value: <id-user>}] }]
+      ldapOptions = 'getMemberOfRoles'
+    } else {
+      // optional - simpel filtering
+      if (getObj.operator === 'eq') {
+        const [filterAttr, err] = scimgateway.endpointMapper('outbound', getObj.attribute, config.map.role)
+        if (err) throw new Error(`${action} error: ${err.message}`)
+        const filter = createAndFilter(baseEntity, 'role', [{ attribute: filterAttr, value: getObj.value }])
+        ldapOptions = {
+          filter,
+          scope,
+          attributes: attrs,
+        }
+      } else {
+        throw new Error(`${action} error: not supporting simpel filtering: ${getObj.rawFilter}`)
+      }
+    }
+  } else if (getObj.rawFilter) {
+    // optional - advanced filtering having and/or/not - use getObj.rawFilter
+    throw new Error(`${action} error: not supporting advanced filtering: ${getObj.rawFilter}`)
+  } else {
+    // mandatory - no filtering (!getObj.operator && !getObj.rawFilter) - all roles to be returned
+    const filter = createAndFilter(baseEntity, 'role', [{ attribute: roleDisplayNameAttr, value: '*' }])
+    ldapOptions = {
+      filter,
+      scope,
+      attributes: attrs,
+    }
+  }
+  // mandatory if-else logic - end
+
+  if (!ldapOptions) throw new Error(`${action} error: mandatory if-else logic not fully implemented`)
+
+  try {
+    if (ldapOptions === 'getMemberOfRoles') {
+      let memberValue = getObj.value
+      // For OpenLDAP with DN-based IDs, unhash the member ID if it's a hashed value
+      if (!config.useSID_id && !config.useGUID_id) {
+        try {
+          // Roles can contain both users and other groups, so allow both entity types
+          memberValue = await unhashId(baseEntity, getObj.value, ctx)
+          // Decode URL encoding if present
+          if (typeof memberValue === 'string' && memberValue.includes('%')) {
+            memberValue = decodeURIComponent(memberValue)
+          }
+        } catch (err) {
+          // If unhashing fails, the value might already be a DN, use it directly
+          memberValue = getObj.value
+        }
+      }
+      result.Resources = await getMemberOfRoles(baseEntity, memberValue, ctx)
+    }
+    else {
+      const roles: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+      result.Resources = await Promise.all(roles.map(async (role: any) => { // Promise.all because of async map
+        if (config.useSID_id || config.useGUID_id) {
+          if (role.member) {
+            const arr: string[] = []
+            if (Array.isArray(role.member)) {
+              for (let i = 0; i < role.member.length; i++) {
+                const id = await dnToSidGuid(baseEntity, role.member[i], ctx)
+                if (!id) throw new Error(`dnToSidGuid() did not return any ${config.useSID_id ? 'objectSid' : 'objectGUID'} value for dn=${role.member[i]}`)
+                arr.push(id)
+              }
+              role.member = arr
+            } else {
+              const id = await dnToSidGuid(baseEntity, role.member, ctx)
+              if (!id) throw new Error(`dnToSidGuid() did not return any ${config.useSID_id ? 'objectSid' : 'objectGUID'} value for ${role.member}`)
+              role.member = [id]
+            }
+          }
+        }
+        const scimRole = scimgateway.endpointMapper('inbound', role, config.map.role)[0] // endpoint attribute naming => SCIM
+
+        // Store the original DN for ETag calculation, then hash the ID for security
+        let originalDN: string | undefined
+        if (scimRole.id && typeof scimRole.id === 'string') {
+          originalDN = scimRole.id // Store the plain DN
+          scimRole.id = hashId(scimRole.id) // Hash it for external use
+        }
+
+        // Store original member DNs for ETag calculation before hashing
+        let originalMembers: any[] | undefined
+        if (scimRole.members && Array.isArray(scimRole.members)) {
+          // Deep copy original members for ETag calculation
+          originalMembers = scimRole.members.map((member: any) => ({
+            ...member,
+            value: member.value // Keep original DN
+          }))
+
+          // Hash member DNs for external API response
+          scimRole.members = scimRole.members.map((member: any) => {
+            if (member.value && typeof member.value === 'string') {
+              return { ...member, value: hashId(member.value) }
+            }
+            return member
+          })
+        }
+
+        // Set plainId and originalMembers for enhanced ETag generation by scimgateway framework
+        if (originalDN) {
+          scimRole.plainId = originalDN
+        }
+        if (originalMembers) {
+          scimRole._originalMembers = originalMembers
+        }
+
+        return scimRole
+      }))
+    }
+
+    result.totalResults = result.Resources.length
+    return result
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
 // createPermission
 // =================================================
 scimgateway.createPermission = async (baseEntity: string, permissionObj: Record<string, any>, ctx?: Record<string, any>) => {
@@ -1330,6 +1546,66 @@ scimgateway.createPermission = async (baseEntity: string, permissionObj: Record<
     if (Array.isArray(scimResult?.Resources) && scimResult.Resources.length === 1) {
       return scimResult.Resources[0]
     } else throw new Error('failed creating permission')
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
+// createRole
+// =================================================
+scimgateway.createRole = async (baseEntity: string, roleObj: Record<string, any>, ctx?: Record<string, any>) => {
+  const action = 'createRole'
+  scimgateway.logDebug(baseEntity, `handling ${action} roleObj=${JSON.stringify(roleObj)}`)
+
+  if (!config.map.role) throw new Error(`${action} error: missing configuration endpoint.map.role`)
+  const roleBase = config.entity[baseEntity].ldap.roleBase
+
+  // convert SCIM attributes to endpoint attributes according to config.map
+  const [endpointObj] = scimgateway.endpointMapper('outbound', roleObj, config.map.role)
+
+  // For OpenLDAP, unhash member IDs to get original DNs
+  if (endpointObj.member && Array.isArray(endpointObj.member) && !config.useSID_id && !config.useGUID_id) {
+    for (let i = 0; i < endpointObj.member.length; i++) {
+      try {
+        // Roles can contain both users and other groups as members
+        const originalDN = await unhashId(baseEntity, endpointObj.member[i], ctx)
+        // Decode URL encoding if present
+        if (typeof originalDN === 'string' && originalDN.includes('%')) {
+          endpointObj.member[i] = decodeURIComponent(originalDN)
+        } else {
+          endpointObj.member[i] = originalDN
+        }
+      } catch (err: any) {
+        // If unhashing fails, assume the value is already a DN
+        scimgateway.logDebug(baseEntity, `${action}: Could not unhash member ID ${endpointObj.member[i]}, using as-is: ${err.message}`)
+      }
+    }
+  }
+
+  // endpointObj.objectClass is mandatory and must must match your ldap schema
+  endpointObj.objectClass = config.entity[baseEntity].ldap.groupObjectClasses // Use same object classes as groups
+
+  let base = ''
+  const [roleNamingAttr, scimAttr] = getNamingAttribute(baseEntity, 'role') // ['CN', 'displayName']
+  const arr = scimAttr.split('.')
+  if (arr.length < 2) {
+    base = `${roleNamingAttr}=${roleObj[scimAttr]},${roleBase}`
+  } else {
+    base = `${roleNamingAttr}=${roleObj[arr[0]][arr[1]]},${roleBase}`
+  }
+
+  const method = 'add'
+  delete endpointObj.dn
+
+  try {
+    await doRequest(baseEntity, method, base, endpointObj, ctx)
+    // Hash the DN to get the proper ID for getRoles call
+    const hashedId = hashId(encodeURIComponent(base))
+    const scimResult = await scimgateway.getRoles(baseEntity, { attribute: 'id', operator: 'eq', value: hashedId }, [], ctx)
+    if (Array.isArray(scimResult?.Resources) && scimResult.Resources.length === 1) {
+      return scimResult.Resources[0]
+    } else throw new Error('failed creating role')
   } catch (err: any) {
     throw new Error(`${action} error: ${err.message}`)
   }
@@ -1453,6 +1729,176 @@ scimgateway.modifyPermission = async (baseEntity: string, id: string, attrObj: R
   }
 }
 
+// =================================================
+// deleteRole
+// =================================================
+scimgateway.deleteRole = async (baseEntity: string, id: string, ctx?: Record<string, any>) => {
+  const action = 'deleteRole'
+  scimgateway.logDebug(baseEntity, `handling ${action} id=${id}`)
+
+  let base
+  if (config.useSID_id || config.useGUID_id) base = id
+  else {
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
+
+  const method = 'del'
+
+  try {
+    await doRequest(baseEntity, method, base, {}, ctx)
+    return null
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// =================================================
+// modifyRole
+// =================================================
+scimgateway.modifyRole = async (baseEntity: string, id: string, attrObj: Record<string, any>, ctx?: Record<string, any>) => {
+  const action = 'modifyRole'
+  scimgateway.logDebug(baseEntity, `handling ${action} id=${id} attrObj=${JSON.stringify(attrObj)}`)
+
+  if (!config.map.role) throw new Error(`${action} error: missing configuration endpoint.map.role`)
+  if (attrObj.members && !Array.isArray(attrObj.members)) {
+    throw new Error(`${action} error: ${JSON.stringify(attrObj)} - correct syntax is { "members": [...] }`)
+  }
+
+  const [memberAttr] = scimgateway.endpointMapper('outbound', 'members.value', config.map.role)
+  if (!memberAttr && attrObj.members) throw new Error(`${action} error: missing attribute mapping configuration for role members`)
+
+  const role: any = { add: {}, remove: {} }
+  role.add[memberAttr] = []
+  role.remove[memberAttr] = []
+
+  for (let i = 0; i < attrObj?.members?.length; i++) {
+    const el = attrObj.members[i]
+    if (config.useSID_id || config.useGUID_id) {
+      const dn = await sidGuidToDn(baseEntity, el.value, ctx)
+      if (!dn) throw new Error(`${action} error: sidGuidToDn() did not return any objectGUID value for dn=${el.value}`)
+      el.value = dn
+    } else {
+      // For OpenLDAP with DN-based IDs, unhash the member ID to get the original DN
+      // Roles can contain both users and other groups as members
+      el.value = await unhashId(baseEntity, el.value, ctx)
+      // Decode URL encoding if present
+      if (typeof el.value === 'string' && el.value.includes('%')) {
+        el.value = decodeURIComponent(el.value)
+      }
+    }
+    if (el.operation && el.operation === 'delete') { // delete member from role
+      role.remove[memberAttr].push(el.value) // endpointMapper returns URI encoded id because some IdP's don't encode id used in GET url e.g. Symantec/Broadcom/CA
+    } else { // add member to role
+      role.add[memberAttr].push(el.value)
+    }
+  }
+
+  const method = 'modify'
+  let base
+  if (config.useSID_id) base = `<SID=${id}>`
+  else if (config.useGUID_id) base = `<GUID=${id}>`
+  else {
+    // For OpenLDAP with DN-based IDs, unhash the role ID to get the original DN
+    base = await unhashGroupIdOnly(baseEntity, id, ctx)
+    // Decode URL encoding if present
+    if (typeof base === 'string' && base.includes('%')) {
+      base = decodeURIComponent(base)
+    }
+  }
+
+  try {
+    delete attrObj.members
+    const [endpointObj] = scimgateway.endpointMapper('outbound', attrObj, config.map.role)
+    const newDN = checkIfNewDN(baseEntity, base, 'role', attrObj, endpointObj)
+    if (Object.keys(endpointObj).length > 0) {
+      const ldapOptions = {
+        operation: 'replace',
+        modification: endpointObj,
+      }
+      await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    }
+    if (role.add[memberAttr].length > 0) {
+      const ldapOptions = { // using ldap lookup (dn) instead of search
+        operation: 'add',
+        modification: role.add,
+      }
+      await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    }
+    if (role.remove[memberAttr].length > 0) {
+      const ldapOptions = { // using ldap lookup (dn) instead of search
+        operation: 'delete',
+        modification: role.remove,
+      }
+      await doRequest(baseEntity, method, base, ldapOptions, ctx)
+    }
+    if (newDN && config.entity[baseEntity].ldap.allowModifyDN) {
+      await doRequest(baseEntity, 'modifyDN', base, { modification: { newDN } }, ctx)
+      const getObj = { attribute: 'id', operator: 'eq', value: newDN }
+      const res = await scimgateway.getRoles(baseEntity, getObj, [], ctx)
+      return res // return full role object to avoid scimgateway doing same getRole() using original id/dn that now will fail
+    }
+    return null
+  } catch (err: any) {
+    throw new Error(`${action} error: ${err.message}`)
+  }
+}
+
+// Helper function for getting member-of roles (similar to getMemberOfGroups)
+const getMemberOfRoles = async (baseEntity: string, userDn: string, ctx?: any): Promise<any[]> => {
+  if (!config.entity[baseEntity]?.ldap?.roleBase) {
+    return []
+  }
+
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.roleBase
+    const filter = new ldap.EqualityFilter({ attribute: 'member', value: userDn })
+    const ldapOptions = {
+      filter,
+      scope,
+      attributes: [],
+    }
+
+    const roles: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+
+    return await Promise.all(roles.map(async (role: any) => {
+      const scimRole = scimgateway.endpointMapper('inbound', role, config.map.role)[0]
+
+      // Store the original DN for ETag calculation, then hash the ID for security
+      let originalDN: string | undefined
+      if (scimRole.id && typeof scimRole.id === 'string') {
+        originalDN = scimRole.id
+        scimRole.id = hashId(scimRole.id)
+      }
+
+      // Hash member DNs
+      if (scimRole.members && Array.isArray(scimRole.members)) {
+        scimRole.members = scimRole.members.map((member: any) => {
+          if (member.value && typeof member.value === 'string') {
+            return { ...member, value: hashId(member.value) }
+          }
+          return member
+        })
+      }
+
+      // Set plainId for enhanced ETag generation
+      if (originalDN) {
+        scimRole.plainId = originalDN
+      }
+
+      return scimRole
+    }))
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `getMemberOfRoles error: ${err.message}`)
+    return []
+  }
+}
+
 // Helper function for getting member-of permissions (similar to getMemberOfGroups)
 const getMemberOfPermissions = async (baseEntity: string, userDn: string, ctx?: any): Promise<any[]> => {
   if (!config.entity[baseEntity]?.ldap?.permissionBase) {
@@ -1548,6 +1994,17 @@ const unhashId = async (baseEntity: string, hashedId: string, ctx: any): Promise
     }
   } catch (err: any) {
     scimgateway.logDebug(baseEntity, `${action}: Error searching permissions: ${err.message}`)
+  }
+
+  // Then try to find role with this hashed ID
+  try {
+    const roleResult = await searchByHashedId(baseEntity, hashedId, 'role', ctx)
+    if (roleResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found role DN: ${roleResult}`)
+      return roleResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error searching roles: ${err.message}`)
   }
 
   // If direct search fails, try alternative approach with full object retrieval
@@ -1698,7 +2155,7 @@ const searchByHashedIdAlternative = async (baseEntity: string, hashedId: string,
 //
 // searchByHashedId - searches for objects and compares hashed DNs
 //
-const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'user' | 'group' | 'permission', ctx: any): Promise<string | null> => {
+const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'user' | 'group' | 'permission' | 'role', ctx: any): Promise<string | null> => {
   const action = 'searchByHashedId'
   const method = 'search'
   const scope = 'sub'
@@ -1711,13 +2168,20 @@ const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'use
   } else if (type === 'group') {
     base = config.entity[baseEntity].ldap.groupBase
     objectClasses = config.entity[baseEntity].ldap.groupObjectClasses
-  } else { // permission
+  } else if (type === 'permission') {
     base = config.entity[baseEntity].ldap.permissionBase
     if (!base) {
       scimgateway.logDebug(baseEntity, `${action}: No permissionBase configured`)
       return null
     }
     objectClasses = config.entity[baseEntity].ldap.groupObjectClasses // permissions use same object classes as groups
+  } else { // role
+    base = config.entity[baseEntity].ldap.roleBase
+    if (!base) {
+      scimgateway.logDebug(baseEntity, `${action}: No roleBase configured`)
+      return null
+    }
+    objectClasses = config.entity[baseEntity].ldap.groupObjectClasses // roles use same object classes as groups
   }
   
   scimgateway.logDebug(baseEntity, `${action}: Searching ${type}s in base: ${base}`)
@@ -1747,9 +2211,11 @@ const searchByHashedId = async (baseEntity: string, hashedId: string, type: 'use
     for (let i = 0; i < objects.length; i++) {
       const obj = objects[i]
       if (obj.dn) {
+        // Some code paths encode the DN before hashing (encodeURIComponent); accept both variants
         const calculatedHash = hashId(obj.dn)
-        scimgateway.logDebug(baseEntity, `${action}: DN: ${obj.dn} -> Hash: ${calculatedHash}`)
-        if (calculatedHash === hashedId) {
+        const calculatedHashEncoded = hashId(encodeURIComponent(obj.dn))
+        scimgateway.logDebug(baseEntity, `${action}: DN: ${obj.dn} -> Hash: ${calculatedHash} / EncodedHash: ${calculatedHashEncoded}`)
+        if (calculatedHash === hashedId || calculatedHashEncoded === hashedId) {
           scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! DN: ${obj.dn}`)
           return obj.dn
         }
@@ -1847,6 +2313,17 @@ const unhashGroupIdOnly = async (baseEntity: string, hashedId: string, ctx: any)
   } catch (err: any) {
     scimgateway.logDebug(baseEntity, `${action}: Error in permission DN search: ${err.message}`)
   }
+
+  // Then try the efficient DN-only search for roles
+  try {
+    const roleResult = await searchByHashedId(baseEntity, hashedId, 'role', ctx)
+    if (roleResult) {
+      scimgateway.logDebug(baseEntity, `${action}: Found role DN: ${roleResult}`)
+      return roleResult
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in role DN search: ${err.message}`)
+  }
   
   // If that fails, try the alternative search that processes through SCIM mapper (groups only)
   try {
@@ -1924,6 +2401,46 @@ const unhashGroupIdOnly = async (baseEntity: string, hashedId: string, ctx: any)
     }
   } catch (err: any) {
     scimgateway.logDebug(baseEntity, `${action}: Error in alternative permission search: ${err.message}`)
+  }
+
+  // If permission search fails, try alternative search for roles
+  try {
+    const method = 'search'
+    const scope = 'sub'
+    const base = config.entity[baseEntity].ldap.roleBase
+    if (base) {
+      const objectClasses = config.entity[baseEntity].ldap.groupObjectClasses // roles use same object classes as groups
+
+      const objFilters: ldap.EqualityFilter[] = []
+      for (const objClass of objectClasses) {
+        objFilters.push(new ldap.EqualityFilter({ attribute: 'objectClass', value: objClass }))
+      }
+
+      const filter = new ldap.AndFilter({ filters: objFilters })
+      const ldapOptions = {
+        filter,
+        scope,
+        attributes: [], // Get all attributes like in normal getRoles operation
+      }
+
+      const roles: any = await doRequest(baseEntity, method, base, ldapOptions, ctx)
+      scimgateway.logDebug(baseEntity, `${action}: Found ${roles.length} roles to check`)
+
+      for (const role of roles) {
+        // Process the role object similar to how it's done in getRoles
+        const scimObj = scimgateway.endpointMapper('inbound', role, config.map.role)[0]
+        if (scimObj.id && typeof scimObj.id === 'string') {
+          const roleIdHash = hashId(scimObj.id)
+          scimgateway.logDebug(baseEntity, `${action}: Role ${scimObj.displayName || 'unknown'}: ${scimObj.id} -> ${roleIdHash}`)
+          if (roleIdHash === hashedId) {
+            scimgateway.logDebug(baseEntity, `${action}: MATCH FOUND! Role DN: ${scimObj.id}`)
+            return scimObj.id
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    scimgateway.logDebug(baseEntity, `${action}: Error in alternative role search: ${err.message}`)
   }
 
   throw new Error(`${action} error: group or permission not found for hashed ID: ${hashedId}`)
@@ -2406,6 +2923,10 @@ const getNamingAttribute = (baseEntity: string, type: string) => {
       break
     case 'permission':
       // For permissions, use the same naming attribute as groups
+      arr = config.entity[baseEntity]?.ldap?.namingAttribute?.group
+      break
+    case 'role':
+      // For roles, use the same naming attribute as groups
       arr = config.entity[baseEntity]?.ldap?.namingAttribute?.group
       break
     default:
